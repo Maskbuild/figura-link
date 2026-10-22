@@ -27,6 +27,8 @@ public class FiguraLink {
             EmbeddedFiguraServer.start(FiguraLinkConfig.getBackendPort());
             FiguraServerSync.init();
         } else {
+            // Start local backend on client for singleplayer & offline fallback
+            EmbeddedFiguraServer.start(FiguraLinkConfig.getBackendPort());
             FiguraClientSync.init();
         }
     }

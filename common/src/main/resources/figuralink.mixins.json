@@ -8,7 +8,8 @@
     "NetworkStuffMixin",
     "FiguraCommandsMixin",
     "HttpAPIMixin",
-    "FiguraWebSocketAdapterMixin"
+    "FiguraWebSocketAdapterMixin",
+    "AuthHandlerMixin"
   ],
   "injectors": {
     "defaultRequire": 1

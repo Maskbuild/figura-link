@@ -10,23 +10,31 @@ import java.net.URI;
 @Mixin(targets = "org.figuramc.figura.backend2.HttpAPI", remap = false)
 public class HttpAPIMixin {
 
-    @Inject(method = "getUri", at = @At("HEAD"), cancellable = true)
-    private static void onGetUri(String path, CallbackInfoReturnable<URI> cir) {
+    public static boolean isCustomBackend() {
         String address = getServerIp();
-        if (address != null && !address.isEmpty() && !address.equalsIgnoreCase("figura.moonlight-devs.org")) {
-            String clean = address.replaceFirst("^(http://|https://)", "");
-            String scheme = address.startsWith("https://") ? "https://" : "http://";
-            cir.setReturnValue(URI.create(scheme + clean + "/api/" + path));
-        }
+        return address != null && !address.isEmpty() && !address.contains("moonlight-devs.org");
     }
 
-    private static String getServerIp() {
+    public static String getServerIp() {
         try {
             Class<?> configs = Class.forName("org.figuramc.figura.config.Configs");
             Object serverIpConfig = configs.getField("SERVER_IP").get(null);
             return (String) serverIpConfig.getClass().getField("value").get(serverIpConfig);
         } catch (Throwable t) {
             return null;
+        }
+    }
+
+    @Inject(method = "getUri", at = @At("HEAD"), cancellable = true)
+    private static void onGetUri(String path, CallbackInfoReturnable<URI> cir) {
+        if (isCustomBackend()) {
+            String address = getServerIp();
+            if (address != null && !address.isEmpty()) {
+                String clean = address.replaceFirst("^(http://|https://)", "");
+                String scheme = address.startsWith("https://") ? "https://" : "http://";
+                String normPath = (path != null && path.startsWith("/")) ? path : ("/" + (path == null ? "" : path));
+                cir.setReturnValue(URI.create(scheme + clean + "/api" + normPath));
+            }
         }
     }
 }

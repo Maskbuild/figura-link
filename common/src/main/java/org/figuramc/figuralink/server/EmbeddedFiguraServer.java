@@ -8,7 +8,6 @@ import org.figuramc.figuralink.config.FiguraLinkConfig;
 
 import java.io.*;
 import java.net.InetSocketAddress;
-import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -57,9 +56,16 @@ public class EmbeddedFiguraServer {
             try {
                 String path = exchange.getRequestURI().getPath();
                 if (path == null) path = "/";
-                if (path.startsWith("/api")) {
+                
+                // Clean leading /api or /api/
+                while (path.startsWith("/api/")) {
                     path = path.substring(4);
-                    if (path.isEmpty()) path = "/";
+                }
+                if (path.equals("/api")) {
+                    path = "/";
+                }
+                while (path.startsWith("//")) {
+                    path = path.substring(1);
                 }
 
                 String method = exchange.getRequestMethod().toUpperCase();
@@ -105,17 +111,18 @@ public class EmbeddedFiguraServer {
                     return;
                 }
 
-                // 3. Limits: /limits
+                // 3. Limits: /limits (Figura expects nested { "rate": { "upload": X, "download": Y }, "limits": { "maxAvatarSize": Z } })
                 if (path.equals("/limits")) {
                     int maxBytes = FiguraLinkConfig.getMaxAvatarSize();
-                    String json = "{\"maxAvatarSize\":" + maxBytes + ",\"uploadRate\":20,\"downloadRate\":100}";
+                    String json = "{\"rate\":{\"upload\":50,\"download\":200},\"limits\":{\"maxAvatarSize\":" + maxBytes + "}}";
                     sendJson(exchange, 200, json);
                     return;
                 }
 
-                // 4. Version: /version
+                // 4. Version: /version (Figura expects JSON { "release": "...", "prerelease": "..." })
                 if (path.equals("/version")) {
-                    sendText(exchange, 200, "0.1.6");
+                    String json = "{\"release\":\"0.1.6\",\"prerelease\":\"0.1.6\"}";
+                    sendJson(exchange, 200, json);
                     return;
                 }
 
@@ -189,15 +196,15 @@ public class EmbeddedFiguraServer {
                     }
                 }
 
-                // 10. User Info: GET /<owner>
+                // 10. User Info: GET /<owner> (Figura expects { "equipped": [ { "owner": "...", "hash": "...", "id": "..." } ], "badges": { "regular": [], "special": [] } })
                 if (method.equals("GET") && parts.length == 2 && !parts[1].isEmpty()) {
                     String owner = parts[1];
                     Path userDir = AVATARS_DIR.resolve(owner);
                     if (Files.exists(userDir) && Files.exists(userDir.resolve("avatar"))) {
-                        String json = "{\"id\":\"" + owner + "\",\"equipped\":\"avatar\",\"avatars\":[\"avatar\"]}";
+                        String json = "{\"equipped\":[{\"owner\":\"" + owner + "\",\"hash\":\"avatar\",\"id\":\"avatar\"}],\"badges\":{\"regular\":[],\"special\":[]}}";
                         sendJson(exchange, 200, json);
                     } else {
-                        String json = "{\"id\":\"" + owner + "\",\"equipped\":null,\"avatars\":[]}";
+                        String json = "{\"equipped\":[],\"badges\":{\"regular\":[],\"special\":[]}}";
                         sendJson(exchange, 200, json);
                     }
                     return;

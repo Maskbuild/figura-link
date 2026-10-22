@@ -111,8 +111,22 @@ public class FiguraClientSync {
 
     public static void switchToServerBackend() {
         int port = FiguraLinkConfig.getBackendPort();
+        String remoteAddr = getRemoteServerAddress();
 
-        // 1. If local embedded backend is alive on 127.0.0.1, connect immediately
+        // If playing on remote multiplayer server, let the server packet configure the IP,
+        // or extract the server host if needed
+        if (remoteAddr != null && !remoteAddr.isEmpty() && !remoteAddr.contains("127.0.0.1") && !remoteAddr.contains("localhost")) {
+            FiguraLink.LOGGER.info("[FiguraLimit] Joined remote server: {}", remoteAddr);
+            // Default to local embedded backend as immediate fallback until packet sync arrives
+            tryConnectLocal(port);
+            return;
+        }
+
+        // Otherwise (singleplayer or localhost) connect directly to 127.0.0.1
+        tryConnectLocal(port);
+    }
+
+    private static void tryConnectLocal(int port) {
         try {
             java.net.URL url = java.net.URI.create("http://127.0.0.1:" + port + "/version").toURL();
             java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
@@ -121,38 +135,29 @@ public class FiguraClientSync {
             if (conn.getResponseCode() == 200) {
                 FiguraLink.LOGGER.info("[FiguraLimit] Detected active local backend on 127.0.0.1:{}", port);
                 setFiguraServerIp("127.0.0.1:" + port);
-                return;
             }
         } catch (Throwable ignored) {}
+    }
 
-        // 2. Otherwise extract host from current server entry
+    public static String getRemoteServerAddress() {
         try {
             Class<?> mcClass = Class.forName("net.minecraft.client.MinecraftClient");
             Object mc = mcClass.getMethod("getInstance").invoke(null);
             Object serverEntry = mcClass.getMethod("getCurrentServerEntry").invoke(mc);
             if (serverEntry != null) {
-                String address = (String) serverEntry.getClass().getField("address").get(serverEntry);
-                if (address != null && !address.isEmpty()) {
-                    String host = address.split(":")[0];
-                    setFiguraServerIp(host + ":" + port);
-                    return;
-                }
+                return (String) serverEntry.getClass().getField("address").get(serverEntry);
             }
-        } catch (Throwable ignored) {}
-
-        // Fallback to intermediary class_310
-        try {
-            Class<?> mcClass = Class.forName("net.minecraft.class_310");
-            Object mc = mcClass.getMethod("method_1551").invoke(null);
-            Object serverEntry = mcClass.getMethod("method_1558").invoke(mc);
-            if (serverEntry != null) {
-                String address = (String) serverEntry.getClass().getField("field_3761").get(serverEntry);
-                if (address != null && !address.isEmpty()) {
-                    String host = address.split(":")[0];
-                    setFiguraServerIp(host + ":" + port);
+        } catch (Throwable t) {
+            try {
+                Class<?> mcClass = Class.forName("net.minecraft.class_310");
+                Object mc = mcClass.getMethod("method_1551").invoke(null);
+                Object serverEntry = mcClass.getMethod("method_1558").invoke(mc);
+                if (serverEntry != null) {
+                    return (String) serverEntry.getClass().getField("field_3761").get(serverEntry);
                 }
-            }
-        } catch (Throwable ignored) {}
+            } catch (Throwable ignored) {}
+        }
+        return null;
     }
 
     public static boolean setFiguraServerIp(String target) {
