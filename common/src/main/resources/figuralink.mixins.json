@@ -6,7 +6,9 @@
   "mixins": [],
   "client": [
     "NetworkStuffMixin",
-    "FiguraCommandsMixin"
+    "FiguraCommandsMixin",
+    "HttpAPIMixin",
+    "FiguraWebSocketAdapterMixin"
   ],
   "injectors": {
     "defaultRequire": 1

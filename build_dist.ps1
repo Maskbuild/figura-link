@@ -16,7 +16,8 @@ $slf4j = "C:\Users\catiswin\.gradle\caches\forge_gradle\maven_downloader\org\slf
 $fabric = "C:\Users\catiswin\.gradle\caches\modules-2\files-2.1\net.fabricmc\fabric-loader\0.15.11\9c2be53d84ec5c4fb58bb5b8d9c8a629047c9ee9\fabric-loader-0.15.11.jar"
 $fml = "C:\Users\catiswin\.gradle\caches\minecraftforge\forgegradle\mavenizer\caches\maven\forge\net\minecraftforge\javafmllanguage\1.21.1-52.1.16\javafmllanguage-1.21.1-52.1.16.jar"
 $brigadier = "C:\Users\catiswin\AppData\Roaming\PrismLauncher\libraries\com\mojang\brigadier\1.1.8\brigadier-1.1.8.jar"
-$cp = "$mixin;$slf4j;$fabric;$fml;$brigadier"
+$figura = "C:\Users\catiswin\.gradle\caches\modules-2\files-2.1\maven.modrinth\figura\0.1.6+1.20.1\82707830e73debfa51b51dc4ec695bc5756c8ea7\figura-0.1.6+1.20.1.jar"
+$cp = "$mixin;$slf4j;$fabric;$fml;$brigadier;$figura"
 
 Write-Host "Compiling Java sources with target Java 17 (--release 17)..."
 javac --release 17 -proc:none -cp $cp -d $classesDir `
@@ -27,6 +28,8 @@ javac --release 17 -proc:none -cp $cp -d $classesDir `
     common/src/main/java/org/figuramc/figuralink/client/FiguraClientSync.java `
     common/src/main/java/org/figuramc/figuralink/mixin/NetworkStuffMixin.java `
     common/src/main/java/org/figuramc/figuralink/mixin/FiguraCommandsMixin.java `
+    common/src/main/java/org/figuramc/figuralink/mixin/HttpAPIMixin.java `
+    common/src/main/java/org/figuramc/figuralink/mixin/FiguraWebSocketAdapterMixin.java `
     fabric/src/main/java/org/figuramc/figuralink/fabric/FiguraLinkFabric.java `
     forge/src/main/java/org/figuramc/figuralink/forge/FiguraLinkForge.java
 
