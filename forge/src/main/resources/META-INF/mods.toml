@@ -1,0 +1,30 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="MIT"
+
+[[mods]]
+modId="figuralink"
+version="1.0.0"
+displayName="Figura Limit Unlocked"
+description='''Companion mod unlocking avatar upload size limits on Figura servers'''
+
+[[dependencies.figuralink]]
+    modId="forge"
+    mandatory=true
+    versionRange="[47,)"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.figuralink]]
+    modId="minecraft"
+    mandatory=true
+    versionRange="[1.20,1.22)"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.figuralink]]
+    modId="figura"
+    mandatory=true
+    versionRange="*"
+    ordering="AFTER"
+    side="BOTH"

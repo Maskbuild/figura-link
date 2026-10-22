@@ -1,0 +1,16 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "org.figuramc.figuralink.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "mixins": [
+    "FiguraServerConfigMixin",
+    "FiguraServerAvatarManagerMixin"
+  ],
+  "client": [
+    "NetworkStuffMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
