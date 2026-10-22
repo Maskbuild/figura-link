@@ -7,7 +7,7 @@ New-Item -ItemType Directory -Force $distDir | Out-Null
 $classesDir = Join-Path $PSScriptRoot "build_temp\classes"
 $staging = Join-Path $PSScriptRoot "build_temp\staging"
 
-function Create-ModJar {
+function New-ModJar {
     param (
         [string]$jarName,
         [string]$loader,      # 'fabric', 'forge', or 'universal'
@@ -51,10 +51,10 @@ MixinConfigs: figuralink.mixins.json
 }
 
 # Build loaders and versions
-Create-ModJar "figuralink-fabric-1.20.1-1.0.0.jar" "fabric" "1.20.1"
-Create-ModJar "figuralink-fabric-1.21.1-1.0.0.jar" "fabric" "1.21.1"
-Create-ModJar "figuralink-forge-1.20.1-1.0.0.jar" "forge" "1.20.1"
-Create-ModJar "figuralink-forge-1.21.1-1.0.0.jar" "forge" "1.21.1"
-Create-ModJar "figuralink-universal-1.0.0.jar" "universal" "all"
+New-ModJar "figuralink-fabric-1.20.1-1.0.0.jar" "fabric" "1.20.1"
+New-ModJar "figuralink-fabric-1.21.1-1.0.0.jar" "fabric" "1.21.1"
+New-ModJar "figuralink-forge-1.20.1-1.0.0.jar" "forge" "1.20.1"
+New-ModJar "figuralink-forge-1.21.1-1.0.0.jar" "forge" "1.21.1"
+New-ModJar "figuralink-universal-1.0.0.jar" "universal" "all"
 
 Write-Host "`nAll mod jars successfully generated in dist\"

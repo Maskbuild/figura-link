@@ -1,0 +1,10 @@
+{
+  "java.project.referencedLibraries": [
+    "C:/Users/catiswin/.gradle/caches/modules-2/files-2.1/dev.architectury/mixin-patched/0.8.5.12/cf1f787f58d3b08b0cb53ecbba7928c09a1893c8/mixin-patched-0.8.5.12.jar",
+    "C:/Users/catiswin/.gradle/caches/forge_gradle/maven_downloader/org/slf4j/slf4j-api/2.0.1/slf4j-api-2.0.1.jar",
+    "C:/Users/catiswin/.gradle/caches/modules-2/files-2.1/net.fabricmc/fabric-loader/0.15.11/9c2be53d84ec5c4fb58bb5b8d9c8a629047c9ee9/fabric-loader-0.15.11.jar",
+    "C:/Users/catiswin/.gradle/caches/minecraftforge/forgegradle/mavenizer/caches/maven/forge/net/minecraftforge/javafmllanguage/1.21.1-52.1.16/javafmllanguage-1.21.1-52.1.16.jar",
+    "C:/Users/catiswin/.gradle/caches/modules-2/files-2.1/maven.modrinth/figura/0.1.6+1.20.1/82707830e73debfa51b51dc4ec695bc5756c8ea7/figura-0.1.6+1.20.1.jar"
+  ],
+  "java.compile.nullAnalysis.mode": "automatic"
+}
