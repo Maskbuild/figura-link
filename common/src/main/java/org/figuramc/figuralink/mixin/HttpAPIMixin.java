@@ -17,6 +17,9 @@ public class HttpAPIMixin {
             String address = FiguraLinkUtil.getServerIp();
             if (address != null && !address.isEmpty()) {
                 String clean = address.replaceFirst("^(http://|https://)", "");
+                while (clean.endsWith("/")) {
+                    clean = clean.substring(0, clean.length() - 1);
+                }
                 String scheme = address.startsWith("https://") ? "https://" : "http://";
                 String normPath = (path != null && path.startsWith("/")) ? path : ("/" + (path == null ? "" : path));
                 cir.setReturnValue(URI.create(scheme + clean + "/api" + normPath));

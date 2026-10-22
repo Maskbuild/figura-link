@@ -96,8 +96,8 @@ public class FiguraServerSync {
         } else if (publicAddr != null && !publicAddr.trim().isEmpty()) {
             address = publicAddr.trim();
         } else {
-            address = "127.0.0.1:" + FiguraLinkConfig.getBackendPort();
-            FiguraLink.LOGGER.warn("[FiguraLimit] Remote player joined but 'public-backend-address' is empty in figura-limit.properties! External players need a public tunnel address to sync avatars.");
+            address = "AUTO:" + FiguraLinkConfig.getBackendPort();
+            FiguraLink.LOGGER.info("[FiguraLimit] Remote player joined: using automatic server host resolution with backend port {}", FiguraLinkConfig.getBackendPort());
         }
 
         try {

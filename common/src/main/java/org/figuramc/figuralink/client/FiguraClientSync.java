@@ -58,8 +58,19 @@ public class FiguraClientSync {
                         }
 
                         if (address != null && !address.trim().isEmpty()) {
+                            address = address.trim();
+                            if (address.startsWith("AUTO:") || address.startsWith("127.0.0.1:") || address.startsWith("localhost:") || address.startsWith(":")) {
+                                String remoteHost = getRemoteServerHost();
+                                if (remoteHost != null && !remoteHost.isEmpty() && !remoteHost.equals("127.0.0.1") && !remoteHost.equals("localhost")) {
+                                    int colon = address.lastIndexOf(':');
+                                    String port = (colon != -1) ? address.substring(colon) : (":" + FiguraLinkConfig.getBackendPort());
+                                    address = remoteHost + port;
+                                } else if (address.startsWith("AUTO:")) {
+                                    address = "127.0.0.1:" + address.substring(5);
+                                }
+                            }
                             FiguraLink.LOGGER.info("[FiguraLimit] Received server backend address from network packet: {}", address);
-                            setFiguraServerIp(address.trim());
+                            setFiguraServerIp(address);
                         }
                     }
                     return null;
@@ -110,19 +121,16 @@ public class FiguraClientSync {
     }
 
     public static void switchToServerBackend() {
-        int port = FiguraLinkConfig.getBackendPort();
-        String remoteAddr = getRemoteServerAddress();
-
-        // If playing on remote multiplayer server, let the server packet configure the IP,
-        // or extract the server host if needed
-        if (remoteAddr != null && !remoteAddr.isEmpty() && !remoteAddr.contains("127.0.0.1") && !remoteAddr.contains("localhost")) {
-            FiguraLink.LOGGER.info("[FiguraLimit] Joined remote server: {}", remoteAddr);
-            // Default to local embedded backend as immediate fallback until packet sync arrives
-            tryConnectLocal(port);
+        String remoteHost = getRemoteServerHost();
+        if (remoteHost != null && !remoteHost.isEmpty() && !remoteHost.equals("127.0.0.1") && !remoteHost.equals("localhost")) {
+            int port = FiguraLinkConfig.getBackendPort();
+            FiguraLink.LOGGER.info("[FiguraLimit] Joined remote server: {}. Pre-setting backend to {}:{}", remoteHost, remoteHost, port);
+            setFiguraServerIp(remoteHost + ":" + port);
             return;
         }
 
         // Otherwise (singleplayer or localhost) connect directly to 127.0.0.1
+        int port = FiguraLinkConfig.getBackendPort();
         tryConnectLocal(port);
     }
 
@@ -139,6 +147,21 @@ public class FiguraClientSync {
         } catch (Throwable ignored) {}
     }
 
+    public static String getRemoteServerHost() {
+        String raw = getRemoteServerAddress();
+        if (raw == null || raw.trim().isEmpty()) {
+            return null;
+        }
+        raw = raw.trim();
+        if (raw.contains(":")) {
+            raw = raw.substring(0, raw.indexOf(':'));
+        }
+        if (raw.startsWith("[") && raw.endsWith("]")) {
+            raw = raw.substring(1, raw.length() - 1);
+        }
+        return raw;
+    }
+
     public static String getRemoteServerAddress() {
         try {
             Class<?> mcClass = Class.forName("net.minecraft.client.MinecraftClient");
@@ -147,6 +170,20 @@ public class FiguraClientSync {
             if (serverEntry != null) {
                 return (String) serverEntry.getClass().getField("address").get(serverEntry);
             }
+            Object nh = mcClass.getMethod("getNetworkHandler").invoke(mc);
+            if (nh != null) {
+                Method getConn = nh.getClass().getMethod("getConnection");
+                Object conn = getConn.invoke(nh);
+                if (conn != null) {
+                    Method getAddr = conn.getClass().getMethod("getAddress");
+                    Object addr = getAddr.invoke(conn);
+                    if (addr instanceof java.net.InetSocketAddress) {
+                        return ((java.net.InetSocketAddress) addr).getHostString();
+                    } else if (addr != null) {
+                        return addr.toString().replaceAll("^/+", "");
+                    }
+                }
+            }
         } catch (Throwable t) {
             try {
                 Class<?> mcClass = Class.forName("net.minecraft.class_310");
@@ -154,6 +191,20 @@ public class FiguraClientSync {
                 Object serverEntry = mcClass.getMethod("method_1558").invoke(mc);
                 if (serverEntry != null) {
                     return (String) serverEntry.getClass().getField("field_3761").get(serverEntry);
+                }
+                Object nh = mcClass.getMethod("method_1562").invoke(mc);
+                if (nh != null) {
+                    Method getConn = nh.getClass().getMethod("method_10755");
+                    Object conn = getConn.invoke(nh);
+                    if (conn != null) {
+                        Method getAddr = conn.getClass().getMethod("method_10756");
+                        Object addr = getAddr.invoke(conn);
+                        if (addr instanceof java.net.InetSocketAddress) {
+                            return ((java.net.InetSocketAddress) addr).getHostString();
+                        } else if (addr != null) {
+                            return addr.toString().replaceAll("^/+", "");
+                        }
+                    }
                 }
             } catch (Throwable ignored) {}
         }

@@ -16,6 +16,9 @@ public class FiguraWebSocketAdapterMixin {
             String address = FiguraLinkUtil.getServerIp();
             if (address != null && !address.isEmpty()) {
                 String clean = address.replaceFirst("^(http://|https://|ws://|wss://)", "");
+                while (clean.endsWith("/")) {
+                    clean = clean.substring(0, clean.length() - 1);
+                }
                 cir.setReturnValue("ws://" + clean + "/ws");
             }
         }

@@ -24,15 +24,7 @@ public class NetworkStuffMixin {
     @Inject(method = "isConnected", at = @At("HEAD"), cancellable = true)
     private static void onIsConnected(CallbackInfoReturnable<Boolean> cir) {
         if (FiguraLinkUtil.isCustomBackend()) {
-            try {
-                Class<?> ns = Class.forName("org.figuramc.figura.backend2.NetworkStuff");
-                Field apiField = ns.getDeclaredField("api");
-                apiField.setAccessible(true);
-                Object api = apiField.get(null);
-                cir.setReturnValue(api != null);
-            } catch (Throwable t) {
-                cir.setReturnValue(true);
-            }
+            cir.setReturnValue(true);
         }
     }
 
@@ -40,6 +32,37 @@ public class NetworkStuffMixin {
     private static void onCheckWS(CallbackInfoReturnable<Boolean> cir) {
         if (FiguraLinkUtil.isCustomBackend()) {
             cir.setReturnValue(true);
+        }
+    }
+
+    @Inject(method = "disconnect", at = @At("HEAD"), cancellable = true)
+    private static void onDisconnect(String reason, CallbackInfo ci) {
+        if (FiguraLinkUtil.isCustomBackend()) {
+            ci.cancel();
+        }
+    }
+
+    @Inject(method = "tick", at = @At("HEAD"))
+    private static void onTick(CallbackInfo ci) {
+        if (FiguraLinkUtil.isCustomBackend()) {
+            try {
+                Class<?> ns = Class.forName("org.figuramc.figura.backend2.NetworkStuff");
+                Field statusField = ns.getDeclaredField("backendStatus");
+                statusField.setAccessible(true);
+                statusField.setInt(null, 3);
+
+                Field reasonField = ns.getDeclaredField("disconnectedReason");
+                reasonField.setAccessible(true);
+                reasonField.set(null, null);
+
+                Field apiField = ns.getDeclaredField("api");
+                apiField.setAccessible(true);
+                if (apiField.get(null) == null) {
+                    java.lang.reflect.Method connectAPI = ns.getDeclaredMethod("connectAPI", String.class);
+                    connectAPI.setAccessible(true);
+                    connectAPI.invoke(null, "figuralink-token");
+                }
+            } catch (Throwable ignored) {}
         }
     }
 
