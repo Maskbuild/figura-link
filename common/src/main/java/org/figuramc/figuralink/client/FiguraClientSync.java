@@ -15,6 +15,21 @@ public class FiguraClientSync {
 
         registerClientReceiver();
         registerClientAutoSwitch();
+
+        new Thread(() -> {
+            try {
+                Thread.sleep(1500);
+                int port = FiguraLinkConfig.getBackendPort();
+                java.net.URL url = new java.net.URL("http://127.0.0.1:" + port + "/version");
+                java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+                conn.setConnectTimeout(800);
+                conn.setReadTimeout(800);
+                if (conn.getResponseCode() == 200) {
+                    FiguraLink.LOGGER.info("[FiguraLimit] Startup probe: Found active local backend on 127.0.0.1:{}", port);
+                    setFiguraServerIp("127.0.0.1:" + port);
+                }
+            } catch (Throwable ignored) {}
+        }, "FiguraLimit-StartupProbe").start();
     }
 
     private static void registerClientReceiver() {
@@ -63,7 +78,6 @@ public class FiguraClientSync {
         try {
             Class<?> eventsClass = Class.forName("net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents");
             Object joinEvent = eventsClass.getField("JOIN").get(null);
-            Method register = joinEvent.getClass().getMethod("register", Object.class);
 
             Class<?> listenerClass = Class.forName("net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents$Join");
             Object listener = Proxy.newProxyInstance(
@@ -76,13 +90,40 @@ public class FiguraClientSync {
                     return null;
                 }
             );
-            register.invoke(joinEvent, listener);
+
+            Method regMethod = null;
+            for (Method m : joinEvent.getClass().getMethods()) {
+                if ("register".equals(m.getName()) && m.getParameterCount() == 1) {
+                    regMethod = m;
+                    break;
+                }
+            }
+            if (regMethod != null) {
+                regMethod.invoke(joinEvent, listener);
+                FiguraLink.LOGGER.info("[FiguraLimit] Registered ClientPlayConnectionEvents.JOIN for client auto-switch.");
+            }
         } catch (Throwable t) {
-            FiguraLink.LOGGER.debug("[FiguraLimit] Client connection listener skipped: " + t.getMessage());
+            FiguraLink.LOGGER.warn("[FiguraLimit] Client connection listener skipped: " + t.getMessage());
         }
     }
 
     public static void switchToServerBackend() {
+        int port = FiguraLinkConfig.getBackendPort();
+
+        // 1. If local embedded backend is alive on 127.0.0.1, connect immediately
+        try {
+            java.net.URL url = new java.net.URL("http://127.0.0.1:" + port + "/version");
+            java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(800);
+            conn.setReadTimeout(800);
+            if (conn.getResponseCode() == 200) {
+                FiguraLink.LOGGER.info("[FiguraLimit] Detected active local backend on 127.0.0.1:{}", port);
+                setFiguraServerIp("127.0.0.1:" + port);
+                return;
+            }
+        } catch (Throwable ignored) {}
+
+        // 2. Otherwise extract host from current server entry
         try {
             Class<?> mcClass = Class.forName("net.minecraft.client.MinecraftClient");
             Object mc = mcClass.getMethod("getInstance").invoke(null);
@@ -91,7 +132,6 @@ public class FiguraClientSync {
                 String address = (String) serverEntry.getClass().getField("address").get(serverEntry);
                 if (address != null && !address.isEmpty()) {
                     String host = address.split(":")[0];
-                    int port = FiguraLinkConfig.getBackendPort();
                     setFiguraServerIp(host + ":" + port);
                     return;
                 }
@@ -107,7 +147,6 @@ public class FiguraClientSync {
                 String address = (String) serverEntry.getClass().getField("field_3761").get(serverEntry);
                 if (address != null && !address.isEmpty()) {
                     String host = address.split(":")[0];
-                    int port = FiguraLinkConfig.getBackendPort();
                     setFiguraServerIp(host + ":" + port);
                 }
             }

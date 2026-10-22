@@ -45,20 +45,33 @@ public class FiguraServerSync {
                 }
             );
 
-            joinEvent.getClass().getMethod("register", Object.class).invoke(joinEvent, listener);
-            FiguraLink.LOGGER.info("[FiguraLimit] Registered ServerPlayConnectionEvents.JOIN for backend auto-sync.");
+            Method regMethod = null;
+            for (Method m : joinEvent.getClass().getMethods()) {
+                if ("register".equals(m.getName()) && m.getParameterCount() == 1) {
+                    regMethod = m;
+                    break;
+                }
+            }
+            if (regMethod != null) {
+                regMethod.invoke(joinEvent, listener);
+                FiguraLink.LOGGER.info("[FiguraLimit] Registered ServerPlayConnectionEvents.JOIN for backend auto-sync.");
+            } else {
+                FiguraLink.LOGGER.warn("[FiguraLimit] Could not find register method on ServerPlayConnectionEvents.JOIN");
+            }
         } catch (Throwable t) {
-            FiguraLink.LOGGER.debug("[FiguraLimit] Server join sender registration skipped: " + t.getMessage());
+            FiguraLink.LOGGER.warn("[FiguraLimit] Server join sender registration skipped: " + t.getMessage());
         }
     }
 
     public static void sendBackendAddressToPlayer(Object serverPlayer) {
         String publicAddr = FiguraLinkConfig.getPublicBackendAddress();
-        if (publicAddr == null || publicAddr.trim().isEmpty()) {
-            return;
+        String address;
+        if (publicAddr != null && !publicAddr.trim().isEmpty()) {
+            address = publicAddr.trim();
+        } else {
+            address = "127.0.0.1:" + FiguraLinkConfig.getBackendPort();
         }
 
-        String address = publicAddr.trim();
         try {
             Class<?> spn = Class.forName("net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking");
             Class<?> idClass = null;
@@ -78,12 +91,12 @@ public class FiguraServerSync {
             for (Method m : spn.getMethods()) {
                 if ("send".equals(m.getName()) && m.getParameterCount() == 3) {
                     m.invoke(null, serverPlayer, channelId, buf);
-                    FiguraLink.LOGGER.info("[FiguraLimit] Sent public backend address '{}' to player via network packet.", address);
+                    FiguraLink.LOGGER.info("[FiguraLimit] Sent backend address '{}' to player via network packet.", address);
                     return;
                 }
             }
         } catch (Throwable t) {
-            FiguraLink.LOGGER.debug("[FiguraLimit] Could not send sync packet: " + t.getMessage());
+            FiguraLink.LOGGER.warn("[FiguraLimit] Could not send sync packet: " + t.getMessage());
         }
     }
 }
