@@ -1,6 +1,10 @@
 package org.figuramc.figuralink.command;
 
+import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
+import com.mojang.brigadier.builder.RequiredArgumentBuilder;
+import org.figuramc.figuralink.client.FiguraClientSync;
+import org.figuramc.figuralink.config.FiguraLinkConfig;
 
 import java.lang.reflect.Method;
 import java.util.function.Supplier;
@@ -9,6 +13,7 @@ public class FiguraLimitCommand {
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     public static void registerSubcommand(LiteralArgumentBuilder root) {
+        // 1. /figura limit-test
         root.then(LiteralArgumentBuilder.literal("limit-test")
             .requires(FiguraLimitCommand::isOp)
             .executes(context -> {
@@ -25,6 +30,25 @@ public class FiguraLimitCommand {
                 }
                 return 1;
             })
+        );
+
+        // 2. /figura link-server (manual trigger to link to server backend)
+        root.then(LiteralArgumentBuilder.literal("link-server")
+            .executes(context -> {
+                Object source = context.getSource();
+                FiguraClientSync.switchToServerBackend();
+                sendFeedback(source, "[FiguraLimit] Switched Figura Cloud IP to server backend (port " + FiguraLinkConfig.getBackendPort() + ")");
+                return 1;
+            })
+            .then(RequiredArgumentBuilder.argument("address", StringArgumentType.string())
+                .executes(context -> {
+                    Object source = context.getSource();
+                    String address = StringArgumentType.getString(context, "address");
+                    FiguraClientSync.setFiguraServerIp(address);
+                    sendFeedback(source, "[FiguraLimit] Switched Figura Cloud IP to: " + address);
+                    return 1;
+                })
+            )
         );
     }
 

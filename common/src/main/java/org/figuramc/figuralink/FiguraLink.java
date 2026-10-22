@@ -1,6 +1,8 @@
 package org.figuramc.figuralink;
 
+import org.figuramc.figuralink.client.FiguraClientSync;
 import org.figuramc.figuralink.config.FiguraLinkConfig;
+import org.figuramc.figuralink.server.EmbeddedFiguraServer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -18,5 +20,11 @@ public class FiguraLink {
         LOGGER.info("[FiguraLimit] Total server storage limit set to: {} bytes ({} GB)", 
                 FiguraLinkConfig.getTotalStorageLimit(), 
                 FiguraLinkConfig.getTotalStorageLimit() / (1024L * 1024L * 1024L));
+
+        if (!FiguraLinkConfig.isClientEnvironment()) {
+            EmbeddedFiguraServer.start(FiguraLinkConfig.getBackendPort());
+        } else {
+            FiguraClientSync.init();
+        }
     }
 }

@@ -23,6 +23,8 @@ javac --release 17 -proc:none -cp $cp -d $classesDir `
     common/src/main/java/org/figuramc/figuralink/FiguraLink.java `
     common/src/main/java/org/figuramc/figuralink/config/FiguraLinkConfig.java `
     common/src/main/java/org/figuramc/figuralink/command/FiguraLimitCommand.java `
+    common/src/main/java/org/figuramc/figuralink/server/EmbeddedFiguraServer.java `
+    common/src/main/java/org/figuramc/figuralink/client/FiguraClientSync.java `
     common/src/main/java/org/figuramc/figuralink/mixin/NetworkStuffMixin.java `
     common/src/main/java/org/figuramc/figuralink/mixin/FiguraCommandsMixin.java `
     fabric/src/main/java/org/figuramc/figuralink/fabric/FiguraLinkFabric.java `

@@ -12,10 +12,16 @@ import java.util.stream.Stream;
 public class FiguraLinkConfig {
     private static final String CONFIG_FILENAME = "figura-limit.properties";
     
+    // Default 7070
+    private static int backendPort = 7070;
     // Default 5 MB
     private static int maxAvatarSize = 5 * 1024 * 1024;
     // Default 50 GB
     private static long totalStorageLimit = 50L * 1024L * 1024L * 1024L;
+
+    public static int getBackendPort() {
+        return backendPort;
+    }
 
     public static int getMaxAvatarSize() {
         return maxAvatarSize;
@@ -69,9 +75,15 @@ public class FiguraLinkConfig {
         if (Files.exists(configPath)) {
             try (InputStream in = Files.newInputStream(configPath)) {
                 props.load(in);
+                String portStr = props.getProperty("backend-port", "7070").trim();
                 String sizeStr = props.getProperty("max-avatar-size", "5MB").trim();
                 String storageStr = props.getProperty("total-storage-limit", "50GB").trim();
 
+                try {
+                    backendPort = Integer.parseInt(portStr);
+                } catch (Exception ignored) {
+                    backendPort = 7070;
+                }
                 maxAvatarSize = (int) parseBytes(sizeStr, 5 * 1024 * 1024);
                 totalStorageLimit = parseBytes(storageStr, 50L * 1024L * 1024L * 1024L);
                 return;
@@ -107,6 +119,10 @@ public class FiguraLinkConfig {
                     # ========================================================
                     # Figura Limit Unlocked Configuration
                     # ========================================================
+                    # Port for the embedded Figura backend server
+                    # Make sure this port is accessible or port-forwarded if players join over the internet
+                    backend-port=7070
+
                     # Maximum avatar file size allowed on this server
                     # Supports units like: 5MB, 10MB, 20MB, or raw bytes (e.g. 5242880)
                     max-avatar-size=5MB
