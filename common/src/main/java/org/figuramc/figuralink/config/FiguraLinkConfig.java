@@ -12,8 +12,8 @@ import java.util.stream.Stream;
 public class FiguraLinkConfig {
     private static final String CONFIG_FILENAME = "figura-limit.properties";
     
-    // Default 7070
-    private static int backendPort = 7070;
+    // Default 30007
+    private static int backendPort = 30007;
     // Public backend address for playit.gg or tunnel services
     private static String publicBackendAddress = "";
     // Default 5 MB
@@ -69,19 +69,13 @@ public class FiguraLinkConfig {
     }
 
     public static void load() {
-        // NEVER create or write figura-limit.properties in client config!
-        if (isClientEnvironment()) {
-            FiguraLink.LOGGER.info("[FiguraLimit] Client environment detected - skipping client config generation.");
-            return;
-        }
-
         Path configPath = getConfigPath();
         Properties props = new Properties();
 
         if (Files.exists(configPath)) {
             try (InputStream in = Files.newInputStream(configPath)) {
                 props.load(in);
-                String portStr = props.getProperty("backend-port", "7070").trim();
+                String portStr = props.getProperty("backend-port", "30007").trim();
                 publicBackendAddress = props.getProperty("public-backend-address", "").trim();
                 String sizeStr = props.getProperty("max-avatar-size", "5MB").trim();
                 String storageStr = props.getProperty("total-storage-limit", "50GB").trim();
@@ -89,7 +83,7 @@ public class FiguraLinkConfig {
                 try {
                     backendPort = Integer.parseInt(portStr);
                 } catch (Exception ignored) {
-                    backendPort = 7070;
+                    backendPort = 30007;
                 }
                 maxAvatarSize = (int) parseBytes(sizeStr, 5 * 1024 * 1024);
                 totalStorageLimit = parseBytes(storageStr, 50L * 1024L * 1024L * 1024L);
@@ -97,6 +91,11 @@ public class FiguraLinkConfig {
             } catch (Exception e) {
                 FiguraLink.LOGGER.error("[FiguraLimit] Failed to read " + CONFIG_FILENAME + ", using defaults.", e);
             }
+        }
+
+        // On client: skip creating default file
+        if (isClientEnvironment()) {
+            return;
         }
 
         // Create default file ONLY on dedicated server
@@ -127,7 +126,7 @@ public class FiguraLinkConfig {
                     # Figura Limit Unlocked Configuration
                     # ========================================================
                     # Port for the embedded Figura backend server
-                    backend-port=7070
+                    backend-port=30007
 
                     # Optional: Public address for tunnel services (e.g. playit.gg, ngrok)
                     # If left empty, clients will automatically connect to this server's IP and backend-port.

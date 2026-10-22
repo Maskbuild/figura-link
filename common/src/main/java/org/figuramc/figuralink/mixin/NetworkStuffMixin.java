@@ -77,6 +77,13 @@ public class NetworkStuffMixin {
                     connectAPI.setAccessible(true);
                     connectAPI.invoke(null, "figuralink-token");
                 }
+
+                try {
+                    Class<?> am = Class.forName("org.figuramc.figura.avatar.AvatarManager");
+                    Field lu = am.getDeclaredField("localUploaded");
+                    lu.setAccessible(true);
+                    lu.setBoolean(null, false);
+                } catch (Throwable ignored) {}
             } catch (Throwable ignored) {}
         }
     }

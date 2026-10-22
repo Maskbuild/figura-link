@@ -40,7 +40,7 @@ public class FiguraLimitCommand {
                 sendFeedback(source, "[FiguraLimit] Switched Figura Cloud IP to server backend (port " + FiguraLinkConfig.getBackendPort() + ")");
                 return 1;
             })
-            .then(RequiredArgumentBuilder.argument("address", StringArgumentType.string())
+            .then(RequiredArgumentBuilder.argument("address", StringArgumentType.greedyString())
                 .executes(context -> {
                     Object source = context.getSource();
                     String address = StringArgumentType.getString(context, "address");

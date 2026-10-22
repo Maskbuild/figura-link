@@ -10,7 +10,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 @Mixin(targets = "org.figuramc.figura.commands.FiguraCommands", remap = false)
 public class FiguraCommandsMixin {
 
-    @SuppressWarnings({"rawtypes", "unchecked"})
+    @SuppressWarnings("rawtypes")
     @Inject(method = "getCommandRoot", at = @At("RETURN"), cancellable = true)
     private static void onGetCommandRoot(CallbackInfoReturnable<LiteralArgumentBuilder> cir) {
         LiteralArgumentBuilder root = cir.getReturnValue();

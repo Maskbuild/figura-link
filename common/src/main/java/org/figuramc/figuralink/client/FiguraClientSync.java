@@ -3,8 +3,14 @@ package org.figuramc.figuralink.client;
 import org.figuramc.figuralink.FiguraLink;
 import org.figuramc.figuralink.config.FiguraLinkConfig;
 
+import java.io.InputStream;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.net.HttpURLConnection;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
+import java.net.URL;
 
 public class FiguraClientSync {
 
@@ -111,6 +117,7 @@ public class FiguraClientSync {
                     disconnectClass.getClassLoader(),
                     new Class<?>[]{disconnectClass},
                     (proxy, method, args) -> {
+                        FiguraLink.LOGGER.info("[FiguraLimit] Client disconnected from server: restoring official Figura backend.");
                         restoreOfficialBackend();
                         return null;
                     }
@@ -128,16 +135,71 @@ public class FiguraClientSync {
     }
 
     public static void switchToServerBackend() {
-        String remoteHost = getRemoteServerHost();
-        if (remoteHost != null && !remoteHost.isEmpty() && !remoteHost.equals("127.0.0.1") && !remoteHost.equals("localhost")) {
-            FiguraLink.LOGGER.info("[FiguraLimit] Joined remote server: {}. Requesting backend port from server...", remoteHost);
-            requestBackendFromServer();
-            return;
-        }
+        new Thread(() -> {
+            String remoteHost = null;
+            for (int i = 0; i < 15; i++) {
+                if (isSingleplayer()) {
+                    FiguraLink.LOGGER.info("[FiguraLimit] Singleplayer world detected: using official Figura cloud.");
+                    restoreOfficialBackend();
+                    return;
+                }
+                remoteHost = getRemoteServerHost();
+                if (remoteHost != null && !remoteHost.isEmpty() && !remoteHost.equals("127.0.0.1") && !remoteHost.equals("localhost")) {
+                    break;
+                }
+                try {
+                    Thread.sleep(200);
+                } catch (InterruptedException ignored) {}
+            }
 
-        // Singleplayer or private world: ALWAYS use official Figura Cloud
-        FiguraLink.LOGGER.info("[FiguraLimit] Singleplayer/private world detected: using official Figura cloud.");
-        restoreOfficialBackend();
+            if (remoteHost != null && !remoteHost.isEmpty() && !remoteHost.equals("127.0.0.1") && !remoteHost.equals("localhost")) {
+                FiguraLink.LOGGER.info("[FiguraLimit] Joined remote server: {}. Auto-switching to server backend...", remoteHost);
+                
+                // Immediately switch to remoteHost:<backendPort>
+                String targetAddress = remoteHost + ":" + FiguraLinkConfig.getBackendPort();
+                setFiguraServerIp(targetAddress);
+
+                // Send request packet to server in case server has custom port / public tunnel
+                requestBackendFromServer();
+
+                // Also run background HTTP probe to discover active backend port if non-default
+                probeBackendPorts(remoteHost);
+                return;
+            }
+
+            // Singleplayer or local world: ALWAYS use official Figura Cloud
+            FiguraLink.LOGGER.info("[FiguraLimit] Singleplayer/private world detected: using official Figura cloud.");
+            restoreOfficialBackend();
+        }, "FiguraLimit-AutoSwitch").start();
+    }
+
+    private static void probeBackendPorts(String remoteHost) {
+        new Thread(() -> {
+            int currentPort = FiguraLinkConfig.getBackendPort();
+            int[] portsToTest = new int[]{currentPort, 7070, 25566, 25565};
+            for (int port : portsToTest) {
+                try {
+                    URL url = new URL("http://" + remoteHost + ":" + port + "/version");
+                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                    conn.setConnectTimeout(1500);
+                    conn.setReadTimeout(1500);
+                    conn.setRequestMethod("GET");
+                    int code = conn.getResponseCode();
+                    if (code == 200) {
+                        try (InputStream in = conn.getInputStream()) {
+                            byte[] bytes = in.readAllBytes();
+                            String text = new String(bytes);
+                            if (text.contains("release") || text.contains("0.1.6") || text.contains("figura")) {
+                                String workingAddr = remoteHost + ":" + port;
+                                FiguraLink.LOGGER.info("[FiguraLimit] HTTP probe verified active Figura backend at: {}", workingAddr);
+                                setFiguraServerIp(workingAddr);
+                                return;
+                            }
+                        }
+                    }
+                } catch (Throwable ignored) {}
+            }
+        }, "FiguraLimit-PortProbe").start();
     }
 
     public static void requestBackendFromServer() {
@@ -184,6 +246,51 @@ public class FiguraClientSync {
         }
     }
 
+    public static boolean isSingleplayer() {
+        try {
+            Object mc = getMinecraftClientInstance();
+            if (mc == null) return false;
+
+            // 1. isIntegratedServerRunning()
+            for (String mName : new String[]{"isIntegratedServerRunning", "method_1496"}) {
+                try {
+                    Method m = mc.getClass().getMethod(mName);
+                    Object res = m.invoke(mc);
+                    if (res instanceof Boolean && (Boolean) res) {
+                        return true;
+                    }
+                } catch (Throwable ignored) {}
+            }
+
+            // 2. getServer() / isLocalServer()
+            for (String mName : new String[]{"getServer", "method_1576"}) {
+                try {
+                    Method m = mc.getClass().getMethod(mName);
+                    if (m.invoke(mc) != null) {
+                        return true;
+                    }
+                } catch (Throwable ignored) {}
+            }
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    private static Object getMinecraftClientInstance() {
+        for (String cName : new String[]{"net.minecraft.client.MinecraftClient", "net.minecraft.class_310"}) {
+            try {
+                Class<?> clazz = Class.forName(cName);
+                for (String mName : new String[]{"getInstance", "method_1551"}) {
+                    try {
+                        Method m = clazz.getMethod(mName);
+                        Object inst = m.invoke(null);
+                        if (inst != null) return inst;
+                    } catch (Throwable ignored) {}
+                }
+            } catch (Throwable ignored) {}
+        }
+        return null;
+    }
+
     public static String getRemoteServerHost() {
         String raw = getRemoteServerAddress();
         if (raw == null || raw.trim().isEmpty()) {
@@ -201,50 +308,101 @@ public class FiguraClientSync {
 
     public static String getRemoteServerAddress() {
         try {
-            Class<?> mcClass = Class.forName("net.minecraft.client.MinecraftClient");
-            Object mc = mcClass.getMethod("getInstance").invoke(null);
-            Object serverEntry = mcClass.getMethod("getCurrentServerEntry").invoke(mc);
-            if (serverEntry != null) {
-                return (String) serverEntry.getClass().getField("address").get(serverEntry);
+            Object mc = getMinecraftClientInstance();
+            if (mc == null) return null;
+
+            if (isSingleplayer()) {
+                return null;
             }
-            Object nh = mcClass.getMethod("getNetworkHandler").invoke(mc);
+
+            // 1. Check ServerInfo (getCurrentServerEntry / method_1558)
+            Object serverEntry = null;
+            for (String mName : new String[]{"getCurrentServerEntry", "method_1558"}) {
+                try {
+                    Method m = mc.getClass().getMethod(mName);
+                    serverEntry = m.invoke(mc);
+                    if (serverEntry != null) break;
+                } catch (Throwable ignored) {}
+            }
+
+            if (serverEntry != null) {
+                for (String fieldName : new String[]{"field_3761", "address", "b"}) {
+                    try {
+                        Field f = serverEntry.getClass().getDeclaredField(fieldName);
+                        f.setAccessible(true);
+                        Object val = f.get(serverEntry);
+                        if (val instanceof String && !((String) val).trim().isEmpty()) {
+                            return ((String) val).trim();
+                        }
+                    } catch (Throwable ignored) {}
+                }
+                for (Field f : serverEntry.getClass().getDeclaredFields()) {
+                    if (f.getType() == String.class) {
+                        try {
+                            f.setAccessible(true);
+                            String s = (String) f.get(serverEntry);
+                            if (s != null && (s.contains(".") || s.contains(":"))) {
+                                return s.trim();
+                            }
+                        } catch (Throwable ignored) {}
+                    }
+                }
+            }
+
+            // 2. Check NetworkHandler connection address
+            Object nh = null;
+            for (String mName : new String[]{"getNetworkHandler", "method_1562"}) {
+                try {
+                    Method m = mc.getClass().getMethod(mName);
+                    nh = m.invoke(mc);
+                    if (nh != null) break;
+                } catch (Throwable ignored) {}
+            }
+
             if (nh != null) {
-                Method getConn = nh.getClass().getMethod("getConnection");
-                Object conn = getConn.invoke(nh);
+                Object conn = null;
+                for (String mName : new String[]{"getConnection", "method_48296"}) {
+                    try {
+                        Method m = nh.getClass().getMethod(mName);
+                        conn = m.invoke(nh);
+                        if (conn != null) break;
+                    } catch (Throwable ignored) {}
+                }
+
+                if (conn == null) {
+                    for (Field f : nh.getClass().getDeclaredFields()) {
+                        String typeName = f.getType().getName();
+                        if (typeName.endsWith("ClientConnection") || typeName.endsWith("class_2535") || typeName.equals("sd")) {
+                            try {
+                                f.setAccessible(true);
+                                conn = f.get(nh);
+                                if (conn != null) break;
+                            } catch (Throwable ignored) {}
+                        }
+                    }
+                }
+
                 if (conn != null) {
-                    Method getAddr = conn.getClass().getMethod("getAddress");
-                    Object addr = getAddr.invoke(conn);
-                    if (addr instanceof java.net.InetSocketAddress) {
-                        return ((java.net.InetSocketAddress) addr).getHostString();
+                    Object addr = null;
+                    for (String mName : new String[]{"getAddress", "method_10755"}) {
+                        try {
+                            Method m = conn.getClass().getMethod(mName);
+                            addr = m.invoke(conn);
+                            if (addr != null) break;
+                        } catch (Throwable ignored) {}
+                    }
+
+                    if (addr instanceof InetSocketAddress) {
+                        InetSocketAddress isa = (InetSocketAddress) addr;
+                        String host = isa.getHostString();
+                        int port = isa.getPort();
+                        return (port > 0 && port != 25565) ? (host + ":" + port) : host;
                     } else if (addr != null) {
                         return addr.toString().replaceAll("^/+", "");
                     }
                 }
             }
-        } catch (Throwable t) {
-            try {
-                Class<?> mcClass = Class.forName("net.minecraft.class_310");
-                Object mc = mcClass.getMethod("method_1551").invoke(null);
-                Object serverEntry = mcClass.getMethod("method_1558").invoke(mc);
-                if (serverEntry != null) {
-                    return (String) serverEntry.getClass().getField("field_3761").get(serverEntry);
-                }
-                Object nh = mcClass.getMethod("method_1562").invoke(mc);
-                if (nh != null) {
-                    Method getConn = nh.getClass().getMethod("method_10755");
-                    Object conn = getConn.invoke(nh);
-                    if (conn != null) {
-                        Method getAddr = conn.getClass().getMethod("method_10756");
-                        Object addr = getAddr.invoke(conn);
-                        if (addr instanceof java.net.InetSocketAddress) {
-                            return ((java.net.InetSocketAddress) addr).getHostString();
-                        } else if (addr != null) {
-                            return addr.toString().replaceAll("^/+", "");
-                        }
-                    }
-                }
-            } catch (Throwable ignored) {}
-        }
+        } catch (Throwable ignored) {}
         return null;
     }
 
@@ -252,6 +410,11 @@ public class FiguraClientSync {
         try {
             Class<?> configs = Class.forName("org.figuramc.figura.config.Configs");
             Object serverIpConfig = configs.getField("SERVER_IP").get(null);
+            String current = (String) serverIpConfig.getClass().getField("value").get(serverIpConfig);
+            if (target.equals(current)) {
+                return true;
+            }
+
             Method setValue = serverIpConfig.getClass().getMethod("setValue", String.class);
             setValue.invoke(serverIpConfig, target);
 
@@ -260,6 +423,15 @@ public class FiguraClientSync {
             // Trigger re-authentication with new backend
             Class<?> ns = Class.forName("org.figuramc.figura.backend2.NetworkStuff");
             ns.getMethod("reAuth").invoke(null);
+
+            // Reset localUploaded in AvatarManager so upload button is ready
+            try {
+                Class<?> am = Class.forName("org.figuramc.figura.avatar.AvatarManager");
+                Field lu = am.getDeclaredField("localUploaded");
+                lu.setAccessible(true);
+                lu.setBoolean(null, false);
+            } catch (Throwable ignored) {}
+
             return true;
         } catch (Throwable t) {
             FiguraLink.LOGGER.warn("[FiguraLimit] Failed to update Figura Cloud IP to " + target + ": " + t.getMessage());
