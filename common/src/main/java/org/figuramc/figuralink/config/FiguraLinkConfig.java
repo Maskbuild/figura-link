@@ -48,11 +48,16 @@ public class FiguraLinkConfig {
     }
 
     private static Path getConfigPath() {
-        Path configDir = Paths.get("config");
-        if (Files.exists(configDir) && Files.isDirectory(configDir)) {
-            return configDir.resolve(CONFIG_FILENAME);
+        Path inConfig = Paths.get("config", CONFIG_FILENAME);
+        if (Files.exists(inConfig)) {
+            return inConfig;
         }
-        return Paths.get(CONFIG_FILENAME);
+        Path inRoot = Paths.get(CONFIG_FILENAME);
+        if (Files.exists(inRoot)) {
+            return inRoot;
+        }
+        // Standard Minecraft mod location: config/figura-limit.properties
+        return inConfig;
     }
 
     private static void saveDefault(Path target) {
