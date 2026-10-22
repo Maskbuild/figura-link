@@ -1,6 +1,7 @@
 package org.figuramc.figuralink.mixin;
 
 import org.figuramc.figuralink.FiguraLink;
+import org.figuramc.figuralink.util.FiguraLinkUtil;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -14,7 +15,7 @@ public class AuthHandlerMixin {
 
     @Inject(method = "auth", at = @At("HEAD"), cancellable = true)
     private static void onAuth(boolean force, CallbackInfo ci) {
-        if (HttpAPIMixin.isCustomBackend()) {
+        if (FiguraLinkUtil.isCustomBackend()) {
             ci.cancel();
             try {
                 Class<?> ns = Class.forName("org.figuramc.figura.backend2.NetworkStuff");

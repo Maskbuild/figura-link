@@ -37,6 +37,8 @@ public class EmbeddedFiguraServer {
             server.start();
             FiguraLink.LOGGER.info("[FiguraLimit] Embedded Figura Backend started on port: {}", port);
             FiguraLink.LOGGER.info("[FiguraLimit] Avatars will be stored in: {}", AVATARS_DIR.toAbsolutePath());
+        } catch (java.net.BindException be) {
+            FiguraLink.LOGGER.info("[FiguraLimit] Port {} is already in use by an active backend. Connecting to existing instance.", port);
         } catch (Exception e) {
             FiguraLink.LOGGER.error("[FiguraLimit] Failed to start embedded Figura Backend on port " + port, e);
         }

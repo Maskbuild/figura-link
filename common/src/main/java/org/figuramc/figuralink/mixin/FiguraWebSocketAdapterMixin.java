@@ -1,5 +1,6 @@
 package org.figuramc.figuralink.mixin;
 
+import org.figuramc.figuralink.util.FiguraLinkUtil;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -11,8 +12,8 @@ public class FiguraWebSocketAdapterMixin {
 
     @Inject(method = "getBackendAddress", at = @At("HEAD"), cancellable = true)
     private static void onGetBackendAddress(CallbackInfoReturnable<String> cir) {
-        if (HttpAPIMixin.isCustomBackend()) {
-            String address = HttpAPIMixin.getServerIp();
+        if (FiguraLinkUtil.isCustomBackend()) {
+            String address = FiguraLinkUtil.getServerIp();
             if (address != null && !address.isEmpty()) {
                 String clean = address.replaceFirst("^(http://|https://|ws://|wss://)", "");
                 cir.setReturnValue("ws://" + clean + "/ws");
@@ -22,7 +23,7 @@ public class FiguraWebSocketAdapterMixin {
 
     @Inject(method = "handleClose", at = @At("HEAD"), cancellable = true)
     private void onHandleClose(int code, String reason, CallbackInfo ci) {
-        if (HttpAPIMixin.isCustomBackend()) {
+        if (FiguraLinkUtil.isCustomBackend()) {
             ci.cancel();
         }
     }

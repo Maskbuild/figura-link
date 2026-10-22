@@ -20,19 +20,13 @@ $figura = "C:\Users\catiswin\.gradle\caches\modules-2\files-2.1\maven.modrinth\f
 $cp = "$mixin;$slf4j;$fabric;$fml;$brigadier;$figura"
 
 Write-Host "Compiling Java sources with target Java 17 (--release 17)..."
-javac --release 17 -proc:none -cp $cp -d $classesDir `
-    common/src/main/java/org/figuramc/figuralink/FiguraLink.java `
-    common/src/main/java/org/figuramc/figuralink/config/FiguraLinkConfig.java `
-    common/src/main/java/org/figuramc/figuralink/command/FiguraLimitCommand.java `
-    common/src/main/java/org/figuramc/figuralink/server/EmbeddedFiguraServer.java `
-    common/src/main/java/org/figuramc/figuralink/server/FiguraServerSync.java `
-    common/src/main/java/org/figuramc/figuralink/client/FiguraClientSync.java `
-    common/src/main/java/org/figuramc/figuralink/mixin/NetworkStuffMixin.java `
-    common/src/main/java/org/figuramc/figuralink/mixin/FiguraCommandsMixin.java `
-    common/src/main/java/org/figuramc/figuralink/mixin/HttpAPIMixin.java `
-    common/src/main/java/org/figuramc/figuralink/mixin/FiguraWebSocketAdapterMixin.java `
-    fabric/src/main/java/org/figuramc/figuralink/fabric/FiguraLinkFabric.java `
-    forge/src/main/java/org/figuramc/figuralink/forge/FiguraLinkForge.java
+$javaFiles = @(
+    (Get-ChildItem -Path "$PSScriptRoot\common\src\main\java" -Filter "*.java" -Recurse).FullName
+    (Get-ChildItem -Path "$PSScriptRoot\fabric\src\main\java" -Filter "*.java" -Recurse).FullName
+    (Get-ChildItem -Path "$PSScriptRoot\forge\src\main\java" -Filter "*.java" -Recurse).FullName
+)
+
+javac --release 17 -proc:none -cp $cp -d $classesDir $javaFiles
 
 function New-ModJar {
     param (
