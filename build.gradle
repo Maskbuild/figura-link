@@ -17,6 +17,7 @@ subprojects {
     dependencies {
         minecraft "com.mojang:minecraft:${project.minecraft_version}"
         mappings loom.officialMojangMappings()
+        compileOnly "com.mojang:brigadier:1.1.8"
     }
 
     java {
