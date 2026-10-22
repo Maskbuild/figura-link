@@ -58,9 +58,9 @@ function New-ModJar {
         $manifestContent = @"
 Manifest-Version: 1.0
 Implementation-Title: Figura Limit Unlocked
-Implementation-Version: 1.1.2
+Implementation-Version: 1.1.3
 Specification-Title: figuralink
-Specification-Version: 1.1.2
+Specification-Version: 1.1.3
 MixinConfigs: figuralink.mixins.json
 "@
         Set-Content -Path "$staging\META-INF\MANIFEST.MF" -Value $manifestContent
@@ -72,10 +72,10 @@ MixinConfigs: figuralink.mixins.json
 }
 
 # Build loaders and versions
-New-ModJar "figuralink-fabric-1.20.1-1.1.2.jar" "fabric" "1.20.1"
-New-ModJar "figuralink-fabric-1.21.1-1.1.2.jar" "fabric" "1.21.1"
-New-ModJar "figuralink-forge-1.20.1-1.1.2.jar" "forge" "1.20.1"
-New-ModJar "figuralink-forge-1.21.1-1.1.2.jar" "forge" "1.21.1"
-New-ModJar "figuralink-universal-1.1.2.jar" "universal" "all"
+New-ModJar "figuralink-fabric-1.20.1-1.1.3.jar" "fabric" "1.20.1"
+New-ModJar "figuralink-fabric-1.21.1-1.1.3.jar" "fabric" "1.21.1"
+New-ModJar "figuralink-forge-1.20.1-1.1.3.jar" "forge" "1.20.1"
+New-ModJar "figuralink-forge-1.21.1-1.1.3.jar" "forge" "1.21.1"
+New-ModJar "figuralink-universal-1.1.3.jar" "universal" "all"
 
 Write-Host "`nAll mod jars successfully generated in dist\"

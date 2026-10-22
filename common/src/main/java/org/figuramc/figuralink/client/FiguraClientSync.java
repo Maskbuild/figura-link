@@ -130,15 +130,40 @@ public class FiguraClientSync {
     public static void switchToServerBackend() {
         String remoteHost = getRemoteServerHost();
         if (remoteHost != null && !remoteHost.isEmpty() && !remoteHost.equals("127.0.0.1") && !remoteHost.equals("localhost")) {
-            int port = FiguraLinkConfig.getBackendPort();
-            FiguraLink.LOGGER.info("[FiguraLimit] Joined remote server: {}. Pre-setting backend to {}:{}", remoteHost, remoteHost, port);
-            setFiguraServerIp(remoteHost + ":" + port);
+            FiguraLink.LOGGER.info("[FiguraLimit] Joined remote server: {}. Requesting backend port from server...", remoteHost);
+            requestBackendFromServer();
             return;
         }
 
         // Singleplayer or private world: ALWAYS use official Figura Cloud
         FiguraLink.LOGGER.info("[FiguraLimit] Singleplayer/private world detected: using official Figura cloud.");
         restoreOfficialBackend();
+    }
+
+    public static void requestBackendFromServer() {
+        new Thread(() -> {
+            for (int delay : new int[]{100, 600, 1500, 3000}) {
+                try {
+                    Thread.sleep(delay);
+                    Class<?> cpn = Class.forName("net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking");
+                    Class<?> idClass = null;
+                    try { idClass = Class.forName("net.minecraft.util.Identifier"); }
+                    catch (Throwable e) { idClass = Class.forName("net.minecraft.class_2960"); }
+                    Object channelId = idClass.getConstructor(String.class, String.class).newInstance("figuralink", "request_backend");
+
+                    Class<?> pbb = Class.forName("net.fabricmc.fabric.api.networking.v1.PacketByteBufs");
+                    Object buf = pbb.getMethod("create").invoke(null);
+
+                    for (Method m : cpn.getMethods()) {
+                        if ("send".equals(m.getName()) && m.getParameterCount() == 2) {
+                            m.invoke(null, channelId, buf);
+                            FiguraLink.LOGGER.debug("[FiguraLimit] Sent request_backend packet to server.");
+                            break;
+                        }
+                    }
+                } catch (Throwable ignored) {}
+            }
+        }, "FiguraLimit-RequestBackend").start();
     }
 
     public static void restoreOfficialBackend() {

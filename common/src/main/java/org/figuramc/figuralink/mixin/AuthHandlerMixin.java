@@ -17,28 +17,27 @@ public class AuthHandlerMixin {
     private static void onAuth(boolean force, CallbackInfo ci) {
         if (FiguraLinkUtil.isCustomBackend()) {
             ci.cancel();
-            try {
-                Class<?> ns = Class.forName("org.figuramc.figura.backend2.NetworkStuff");
-                Method asyncMethod = ns.getMethod("async", Runnable.class);
-                asyncMethod.invoke(null, (Runnable) () -> {
-                    try {
-                        Field statusField = ns.getDeclaredField("backendStatus");
-                        statusField.setAccessible(true);
-                        statusField.setInt(null, 3);
+            java.util.concurrent.CompletableFuture.runAsync(() -> {
+                try {
+                    Class<?> ns = Class.forName("org.figuramc.figura.backend2.NetworkStuff");
+                    Field statusField = ns.getDeclaredField("backendStatus");
+                    statusField.setAccessible(true);
+                    statusField.setInt(null, 3);
 
-                        Method authSuccess = ns.getDeclaredMethod("authSuccess", String.class);
-                        authSuccess.setAccessible(true);
-                        authSuccess.invoke(null, "figuralink-token");
+                    Field reasonField = ns.getDeclaredField("disconnectedReason");
+                    reasonField.setAccessible(true);
+                    reasonField.set(null, null);
 
-                        statusField.setInt(null, 3);
-                        FiguraLink.LOGGER.info("[FiguraLimit] Custom backend authenticated successfully (Status: GREEN).");
-                    } catch (Throwable t) {
-                        FiguraLink.LOGGER.error("[FiguraLimit] Error in custom auth handler", t);
-                    }
-                });
-            } catch (Throwable t) {
-                FiguraLink.LOGGER.error("[FiguraLimit] Failed to invoke NetworkStuff.async", t);
-            }
+                    Method authSuccess = ns.getDeclaredMethod("authSuccess", String.class);
+                    authSuccess.setAccessible(true);
+                    authSuccess.invoke(null, "figuralink-token");
+
+                    statusField.setInt(null, 3);
+                    FiguraLink.LOGGER.info("[FiguraLimit] Custom backend authenticated successfully (Status: GREEN).");
+                } catch (Throwable t) {
+                    FiguraLink.LOGGER.error("[FiguraLimit] Error in custom auth handler", t);
+                }
+            });
         }
     }
 }

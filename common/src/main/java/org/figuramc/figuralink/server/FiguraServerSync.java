@@ -14,6 +14,7 @@ public class FiguraServerSync {
         }
 
         registerServerJoinSender();
+        registerServerRequestListener();
     }
 
     private static void registerServerJoinSender() {
@@ -26,47 +27,18 @@ public class FiguraServerSync {
                 joinListener.getClassLoader(),
                 new Class<?>[]{joinListener},
                 (proxy, method, args) -> {
-                    if ("onPlayReady".equals(method.getName()) && args != null && args.length >= 1) {
-                        Object handler = args[0];
-                        Object player = null;
-                        try {
-                            player = handler.getClass().getMethod("getPlayer").invoke(handler);
-                        } catch (Throwable ignored) {}
-
-                        if (player == null) {
-                            for (java.lang.reflect.Field f : handler.getClass().getDeclaredFields()) {
-                                String typeName = f.getType().getName();
-                                String fieldName = f.getName();
-                                if (typeName.contains("ServerPlayerEntity") || typeName.endsWith("class_3222") ||
-                                    fieldName.equals("player") || fieldName.equals("field_14161")) {
-                                    try {
-                                        f.setAccessible(true);
-                                        player = f.get(handler);
-                                        if (player != null) break;
-                                    } catch (Throwable ignored) {}
-                                }
-                            }
+                    if ("onPlayReady".equals(method.getName()) && args != null) {
+                        // 1. Try PacketSender (args[1])
+                        if (args.length >= 2 && args[1] != null) {
+                            sendViaPacketSender(args[1]);
                         }
 
-                        if (player == null && handler.getClass().getSuperclass() != null) {
-                            for (java.lang.reflect.Field f : handler.getClass().getSuperclass().getDeclaredFields()) {
-                                String typeName = f.getType().getName();
-                                String fieldName = f.getName();
-                                if (typeName.contains("ServerPlayerEntity") || typeName.endsWith("class_3222") ||
-                                    fieldName.equals("player") || fieldName.equals("field_14161")) {
-                                    try {
-                                        f.setAccessible(true);
-                                        player = f.get(handler);
-                                        if (player != null) break;
-                                    } catch (Throwable ignored) {}
-                                }
+                        // 2. Also try ServerPlayerEntity (args[0])
+                        if (args.length >= 1 && args[0] != null) {
+                            Object player = resolvePlayer(args[0]);
+                            if (player != null) {
+                                sendBackendAddressToPlayer(player);
                             }
-                        }
-
-                        if (player != null) {
-                            sendBackendAddressToPlayer(player);
-                        } else {
-                            FiguraLink.LOGGER.warn("[FiguraLimit] Could not resolve ServerPlayerEntity from handler {}", handler.getClass().getName());
                         }
                     }
                     return null;
@@ -85,16 +57,125 @@ public class FiguraServerSync {
                 regMethod.setAccessible(true);
                 regMethod.invoke(joinEvent, listener);
                 FiguraLink.LOGGER.info("[FiguraLimit] Registered ServerPlayConnectionEvents.JOIN for backend auto-sync.");
-            } else {
-                FiguraLink.LOGGER.warn("[FiguraLimit] Could not find register method on ServerPlayConnectionEvents.JOIN");
             }
         } catch (Throwable t) {
             FiguraLink.LOGGER.warn("[FiguraLimit] Server join sender registration skipped: " + t.getMessage());
         }
     }
 
-    public static void sendBackendAddressToPlayer(Object serverPlayer) {
+    private static void registerServerRequestListener() {
+        try {
+            Class<?> spn = Class.forName("net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking");
+            Class<?> idClass = null;
+            try { idClass = Class.forName("net.minecraft.util.Identifier"); }
+            catch (Throwable e) { idClass = Class.forName("net.minecraft.class_2960"); }
+
+            Object channelId = idClass.getConstructor(String.class, String.class).newInstance("figuralink", "request_backend");
+
+            Class<?> handlerClass = Class.forName("net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking$PlayChannelHandler");
+            Object handler = Proxy.newProxyInstance(
+                handlerClass.getClassLoader(),
+                new Class<?>[]{handlerClass},
+                (proxy, method, args) -> {
+                    if ("receive".equals(method.getName()) && args != null) {
+                        // args: (server, player, handler, buf, responseSender)
+                        for (Object arg : args) {
+                            if (arg != null && arg.getClass().getName().contains("PacketSender")) {
+                                sendViaPacketSender(arg);
+                                return null;
+                            }
+                        }
+                        if (args.length >= 2 && args[1] != null) {
+                            sendBackendAddressToPlayer(args[1]);
+                        }
+                    }
+                    return null;
+                }
+            );
+
+            Method regMethod = spn.getMethod("registerGlobalReceiver", idClass, handlerClass);
+            regMethod.invoke(null, channelId, handler);
+            FiguraLink.LOGGER.info("[FiguraLimit] Registered ServerPlayNetworking receiver for 'figuralink:request_backend'");
+        } catch (Throwable t) {
+            FiguraLink.LOGGER.debug("[FiguraLimit] Request listener registration skipped: " + t.getMessage());
+        }
+    }
+
+    private static Object resolvePlayer(Object handler) {
+        try {
+            return handler.getClass().getMethod("getPlayer").invoke(handler);
+        } catch (Throwable ignored) {}
+
+        for (java.lang.reflect.Field f : handler.getClass().getDeclaredFields()) {
+            String typeName = f.getType().getName();
+            String fieldName = f.getName();
+            if (typeName.contains("ServerPlayerEntity") || typeName.endsWith("class_3222") ||
+                fieldName.equals("player") || fieldName.equals("field_14161")) {
+                try {
+                    f.setAccessible(true);
+                    Object p = f.get(handler);
+                    if (p != null) return p;
+                } catch (Throwable ignored) {}
+            }
+        }
+
+        if (handler.getClass().getSuperclass() != null) {
+            for (java.lang.reflect.Field f : handler.getClass().getSuperclass().getDeclaredFields()) {
+                String typeName = f.getType().getName();
+                String fieldName = f.getName();
+                if (typeName.contains("ServerPlayerEntity") || typeName.endsWith("class_3222") ||
+                    fieldName.equals("player") || fieldName.equals("field_14161")) {
+                    try {
+                        f.setAccessible(true);
+                        Object p = f.get(handler);
+                        if (p != null) return p;
+                    } catch (Throwable ignored) {}
+                }
+            }
+        }
+        return null;
+    }
+
+    public static String getEffectiveBackendAddress(boolean isLocalhost) {
         String publicAddr = FiguraLinkConfig.getPublicBackendAddress();
+        if (isLocalhost) {
+            return "127.0.0.1:" + FiguraLinkConfig.getBackendPort();
+        } else if (publicAddr != null && !publicAddr.trim().isEmpty()) {
+            return publicAddr.trim();
+        } else {
+            return "AUTO:" + FiguraLinkConfig.getBackendPort();
+        }
+    }
+
+    public static void sendViaPacketSender(Object sender) {
+        try {
+            String address = getEffectiveBackendAddress(false);
+            Class<?> idClass = null;
+            try { idClass = Class.forName("net.minecraft.util.Identifier"); }
+            catch (Throwable e) { idClass = Class.forName("net.minecraft.class_2960"); }
+            Object channelId = idClass.getConstructor(String.class, String.class).newInstance("figuralink", "sync_backend");
+
+            Class<?> pbb = Class.forName("net.fabricmc.fabric.api.networking.v1.PacketByteBufs");
+            Object buf = pbb.getMethod("create").invoke(null);
+            try {
+                buf.getClass().getMethod("writeString", String.class).invoke(buf, address);
+            } catch (Throwable t) {
+                buf.getClass().getMethod("method_10814", String.class).invoke(buf, address);
+            }
+
+            for (Method m : sender.getClass().getMethods()) {
+                if ("sendPacket".equals(m.getName()) && m.getParameterCount() == 2) {
+                    m.invoke(sender, channelId, buf);
+                    FiguraLink.LOGGER.info("[FiguraLimit] Sent backend address '{}' via PacketSender.", address);
+                    return;
+                }
+            }
+        } catch (Throwable t) {
+            FiguraLink.LOGGER.debug("[FiguraLimit] Failed to send via PacketSender: {}", t.getMessage());
+        }
+    }
+
+    public static void sendBackendAddressToPlayer(Object serverPlayer) {
         boolean isLocalhost = false;
         try {
             for (java.lang.reflect.Field f : serverPlayer.getClass().getFields()) {
@@ -118,15 +199,7 @@ public class FiguraServerSync {
             }
         } catch (Throwable ignored) {}
 
-        String address;
-        if (isLocalhost) {
-            address = "127.0.0.1:" + FiguraLinkConfig.getBackendPort();
-        } else if (publicAddr != null && !publicAddr.trim().isEmpty()) {
-            address = publicAddr.trim();
-        } else {
-            address = "AUTO:" + FiguraLinkConfig.getBackendPort();
-            FiguraLink.LOGGER.info("[FiguraLimit] Remote player joined: using automatic server host resolution with backend port {}", FiguraLinkConfig.getBackendPort());
-        }
+        String address = getEffectiveBackendAddress(isLocalhost);
 
         try {
             Class<?> spn = Class.forName("net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking");
@@ -147,7 +220,7 @@ public class FiguraServerSync {
             for (Method m : spn.getMethods()) {
                 if ("send".equals(m.getName()) && m.getParameterCount() == 3) {
                     m.invoke(null, serverPlayer, channelId, buf);
-                    FiguraLink.LOGGER.info("[FiguraLimit] Sent backend address '{}' to player via network packet.", address);
+                    FiguraLink.LOGGER.info("[FiguraLimit] Sent backend address '{}' to player via ServerPlayNetworking.", address);
                     return;
                 }
             }

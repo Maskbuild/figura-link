@@ -10,7 +10,7 @@ import org.slf4j.LoggerFactory;
 public class FiguraLink {
     public static final String MOD_ID = "figuralink";
     public static final String MOD_NAME = "Figura Limit Unlocked";
-    public static final String MOD_VERSION = "1.1.2";
+    public static final String MOD_VERSION = "1.1.3";
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_NAME);
 
     public static void init() {
