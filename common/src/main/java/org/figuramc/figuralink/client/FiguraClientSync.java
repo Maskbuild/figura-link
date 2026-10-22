@@ -13,6 +13,53 @@ public class FiguraClientSync {
             return;
         }
 
+        registerClientReceiver();
+        registerClientAutoSwitch();
+    }
+
+    private static void registerClientReceiver() {
+        try {
+            Class<?> cpn = Class.forName("net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking");
+            Class<?> idClass = null;
+            try { idClass = Class.forName("net.minecraft.util.Identifier"); } 
+            catch (Throwable e) { idClass = Class.forName("net.minecraft.class_2960"); }
+
+            Object channelId = idClass.getConstructor(String.class, String.class).newInstance("figuralink", "sync_backend");
+
+            Class<?> handlerClass = Class.forName("net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking$PlayChannelHandler");
+            Object handler = Proxy.newProxyInstance(
+                handlerClass.getClassLoader(),
+                new Class<?>[]{handlerClass},
+                (proxy, method, args) -> {
+                    if ("receive".equals(method.getName()) && args != null && args.length >= 3) {
+                        Object buf = args[2];
+                        String address = null;
+                        try {
+                            address = (String) buf.getClass().getMethod("readString").invoke(buf);
+                        } catch (Throwable t) {
+                            try {
+                                address = (String) buf.getClass().getMethod("method_10804").invoke(buf);
+                            } catch (Throwable ignored) {}
+                        }
+
+                        if (address != null && !address.trim().isEmpty()) {
+                            FiguraLink.LOGGER.info("[FiguraLimit] Received server backend address from network packet: {}", address);
+                            setFiguraServerIp(address.trim());
+                        }
+                    }
+                    return null;
+                }
+            );
+
+            Method regMethod = cpn.getMethod("registerGlobalReceiver", idClass, handlerClass);
+            regMethod.invoke(null, channelId, handler);
+            FiguraLink.LOGGER.info("[FiguraLimit] Registered ClientPlayNetworking receiver for 'figuralink:sync_backend'");
+        } catch (Throwable t) {
+            FiguraLink.LOGGER.debug("[FiguraLimit] Client networking receiver skipped: " + t.getMessage());
+        }
+    }
+
+    private static void registerClientAutoSwitch() {
         try {
             Class<?> eventsClass = Class.forName("net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents");
             Object joinEvent = eventsClass.getField("JOIN").get(null);
@@ -30,7 +77,6 @@ public class FiguraClientSync {
                 }
             );
             register.invoke(joinEvent, listener);
-            FiguraLink.LOGGER.info("[FiguraLimit] Registered ClientPlayConnectionEvents.JOIN for automatic backend switching.");
         } catch (Throwable t) {
             FiguraLink.LOGGER.debug("[FiguraLimit] Client connection listener skipped: " + t.getMessage());
         }

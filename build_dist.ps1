@@ -25,6 +25,7 @@ javac --release 17 -proc:none -cp $cp -d $classesDir `
     common/src/main/java/org/figuramc/figuralink/config/FiguraLinkConfig.java `
     common/src/main/java/org/figuramc/figuralink/command/FiguraLimitCommand.java `
     common/src/main/java/org/figuramc/figuralink/server/EmbeddedFiguraServer.java `
+    common/src/main/java/org/figuramc/figuralink/server/FiguraServerSync.java `
     common/src/main/java/org/figuramc/figuralink/client/FiguraClientSync.java `
     common/src/main/java/org/figuramc/figuralink/mixin/NetworkStuffMixin.java `
     common/src/main/java/org/figuramc/figuralink/mixin/FiguraCommandsMixin.java `
@@ -63,9 +64,9 @@ function New-ModJar {
         $manifestContent = @"
 Manifest-Version: 1.0
 Implementation-Title: Figura Limit Unlocked
-Implementation-Version: 1.0.0
+Implementation-Version: 1.1.0
 Specification-Title: figuralink
-Specification-Version: 1.0.0
+Specification-Version: 1.1.0
 MixinConfigs: figuralink.mixins.json
 "@
         Set-Content -Path "$staging\META-INF\MANIFEST.MF" -Value $manifestContent
@@ -77,10 +78,10 @@ MixinConfigs: figuralink.mixins.json
 }
 
 # Build loaders and versions
-New-ModJar "figuralink-fabric-1.20.1-1.0.0.jar" "fabric" "1.20.1"
-New-ModJar "figuralink-fabric-1.21.1-1.0.0.jar" "fabric" "1.21.1"
-New-ModJar "figuralink-forge-1.20.1-1.0.0.jar" "forge" "1.20.1"
-New-ModJar "figuralink-forge-1.21.1-1.0.0.jar" "forge" "1.21.1"
-New-ModJar "figuralink-universal-1.0.0.jar" "universal" "all"
+New-ModJar "figuralink-fabric-1.20.1-1.1.0.jar" "fabric" "1.20.1"
+New-ModJar "figuralink-fabric-1.21.1-1.1.0.jar" "fabric" "1.21.1"
+New-ModJar "figuralink-forge-1.20.1-1.1.0.jar" "forge" "1.20.1"
+New-ModJar "figuralink-forge-1.21.1-1.1.0.jar" "forge" "1.21.1"
+New-ModJar "figuralink-universal-1.1.0.jar" "universal" "all"
 
 Write-Host "`nAll mod jars successfully generated in dist\"

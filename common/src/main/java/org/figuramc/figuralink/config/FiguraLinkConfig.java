@@ -14,6 +14,8 @@ public class FiguraLinkConfig {
     
     // Default 7070
     private static int backendPort = 7070;
+    // Public backend address for playit.gg or tunnel services
+    private static String publicBackendAddress = "";
     // Default 5 MB
     private static int maxAvatarSize = 5 * 1024 * 1024;
     // Default 50 GB
@@ -21,6 +23,10 @@ public class FiguraLinkConfig {
 
     public static int getBackendPort() {
         return backendPort;
+    }
+
+    public static String getPublicBackendAddress() {
+        return publicBackendAddress;
     }
 
     public static int getMaxAvatarSize() {
@@ -76,6 +82,7 @@ public class FiguraLinkConfig {
             try (InputStream in = Files.newInputStream(configPath)) {
                 props.load(in);
                 String portStr = props.getProperty("backend-port", "7070").trim();
+                publicBackendAddress = props.getProperty("public-backend-address", "").trim();
                 String sizeStr = props.getProperty("max-avatar-size", "5MB").trim();
                 String storageStr = props.getProperty("total-storage-limit", "50GB").trim();
 
@@ -120,8 +127,12 @@ public class FiguraLinkConfig {
                     # Figura Limit Unlocked Configuration
                     # ========================================================
                     # Port for the embedded Figura backend server
-                    # Make sure this port is accessible or port-forwarded if players join over the internet
                     backend-port=7070
+
+                    # Optional: Public address for tunnel services (e.g. playit.gg, ngrok)
+                    # If left empty, clients will automatically connect to this server's IP and backend-port.
+                    # Example: public-backend-address=signaling-descriptive.tun.ply.gg:12345
+                    public-backend-address=
 
                     # Maximum avatar file size allowed on this server
                     # Supports units like: 5MB, 10MB, 20MB, or raw bytes (e.g. 5242880)

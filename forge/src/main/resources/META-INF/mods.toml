@@ -4,7 +4,7 @@ license="MIT"
 
 [[mods]]
 modId="figuralink"
-version="1.0.0"
+version="1.1.0"
 displayName="Figura Limit Unlocked"
 description='''Companion mod unlocking avatar upload size limits on Figura servers'''
 
