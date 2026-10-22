@@ -73,17 +73,16 @@ public class NetworkStuffMixin {
                 Field apiField = ns.getDeclaredField("api");
                 apiField.setAccessible(true);
                 if (apiField.get(null) == null) {
+                    String playerUuid = "default";
+                    try {
+                        Class<?> fm = Class.forName("org.figuramc.figura.FiguraMod");
+                        Object u = fm.getMethod("getLocalPlayerUUID").invoke(null);
+                        if (u != null) playerUuid = u.toString();
+                    } catch (Throwable ignored) {}
                     java.lang.reflect.Method connectAPI = ns.getDeclaredMethod("connectAPI", String.class);
                     connectAPI.setAccessible(true);
-                    connectAPI.invoke(null, "figuralink-token");
+                    connectAPI.invoke(null, playerUuid);
                 }
-
-                try {
-                    Class<?> am = Class.forName("org.figuramc.figura.avatar.AvatarManager");
-                    Field lu = am.getDeclaredField("localUploaded");
-                    lu.setAccessible(true);
-                    lu.setBoolean(null, false);
-                } catch (Throwable ignored) {}
             } catch (Throwable ignored) {}
         }
     }

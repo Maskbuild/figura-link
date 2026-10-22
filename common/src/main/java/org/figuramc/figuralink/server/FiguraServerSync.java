@@ -5,8 +5,12 @@ import org.figuramc.figuralink.config.FiguraLinkConfig;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class FiguraServerSync {
+
+    public static final Set<Object> onlinePlayers = ConcurrentHashMap.newKeySet();
 
     public static void init() {
         if (FiguraLinkConfig.isClientEnvironment()) {
@@ -37,6 +41,7 @@ public class FiguraServerSync {
                         if (args.length >= 1 && args[0] != null) {
                             Object player = resolvePlayer(args[0]);
                             if (player != null) {
+                                onlinePlayers.add(player);
                                 sendBackendAddressToPlayer(player);
                             }
                         }
@@ -58,6 +63,28 @@ public class FiguraServerSync {
                 regMethod.invoke(joinEvent, listener);
                 FiguraLink.LOGGER.info("[FiguraLimit] Registered ServerPlayConnectionEvents.JOIN for backend auto-sync.");
             }
+
+            // Register DISCONNECT event to remove player
+            try {
+                Object disconnectEvent = events.getField("DISCONNECT").get(null);
+                Class<?> disconnectListener = Class.forName("net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents$Disconnect");
+                Object disListener = Proxy.newProxyInstance(
+                    disconnectListener.getClassLoader(),
+                    new Class<?>[]{disconnectListener},
+                    (proxy, method, args) -> {
+                        if (args != null && args.length >= 1 && args[0] != null) {
+                            Object player = resolvePlayer(args[0]);
+                            if (player != null) {
+                                onlinePlayers.remove(player);
+                            }
+                        }
+                        return null;
+                    }
+                );
+                if (regMethod != null) {
+                    regMethod.invoke(disconnectEvent, disListener);
+                }
+            } catch (Throwable ignored) {}
         } catch (Throwable t) {
             FiguraLink.LOGGER.warn("[FiguraLimit] Server join sender registration skipped: " + t.getMessage());
         }
@@ -86,6 +113,7 @@ public class FiguraServerSync {
                             }
                         }
                         if (args.length >= 2 && args[1] != null) {
+                            onlinePlayers.add(args[1]);
                             sendBackendAddressToPlayer(args[1]);
                         }
                     }
@@ -98,6 +126,47 @@ public class FiguraServerSync {
             FiguraLink.LOGGER.info("[FiguraLimit] Registered ServerPlayNetworking receiver for 'figuralink:request_backend'");
         } catch (Throwable t) {
             FiguraLink.LOGGER.debug("[FiguraLimit] Request listener registration skipped: " + t.getMessage());
+        }
+    }
+
+    public static void broadcastAvatarUpdate(String ownerUuid) {
+        if (ownerUuid == null || ownerUuid.trim().isEmpty() || ownerUuid.equals("default")) {
+            return;
+        }
+        try {
+            Class<?> idClass = null;
+            try { idClass = Class.forName("net.minecraft.util.Identifier"); }
+            catch (Throwable e) { idClass = Class.forName("net.minecraft.class_2960"); }
+            Object channelId = idClass.getConstructor(String.class, String.class).newInstance("figuralink", "avatar_update");
+
+            Class<?> pbb = Class.forName("net.fabricmc.fabric.api.networking.v1.PacketByteBufs");
+            Class<?> spn = Class.forName("net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking");
+            Method sendMethod = null;
+            for (Method m : spn.getMethods()) {
+                if ("send".equals(m.getName()) && m.getParameterCount() == 3) {
+                    sendMethod = m;
+                    break;
+                }
+            }
+
+            if (sendMethod != null) {
+                int sent = 0;
+                for (Object player : onlinePlayers) {
+                    try {
+                        Object buf = pbb.getMethod("create").invoke(null);
+                        try {
+                            buf.getClass().getMethod("writeString", String.class).invoke(buf, ownerUuid.trim());
+                        } catch (Throwable t) {
+                            buf.getClass().getMethod("method_10814", String.class).invoke(buf, ownerUuid.trim());
+                        }
+                        sendMethod.invoke(null, player, channelId, buf);
+                        sent++;
+                    } catch (Throwable ignored) {}
+                }
+                FiguraLink.LOGGER.info("[FiguraLimit] Broadcasted avatar update for '{}' to {} players.", ownerUuid, sent);
+            }
+        } catch (Throwable t) {
+            FiguraLink.LOGGER.warn("[FiguraLimit] Could not broadcast avatar update: " + t.getMessage());
         }
     }
 

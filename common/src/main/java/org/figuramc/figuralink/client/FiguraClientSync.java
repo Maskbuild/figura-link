@@ -11,6 +11,7 @@ import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.URL;
+import java.util.UUID;
 
 public class FiguraClientSync {
 
@@ -22,6 +23,7 @@ public class FiguraClientSync {
         }
 
         registerClientReceiver();
+        registerAvatarUpdateReceiver();
         registerClientAutoSwitch();
     }
 
@@ -75,6 +77,79 @@ public class FiguraClientSync {
             FiguraLink.LOGGER.info("[FiguraLimit] Registered ClientPlayNetworking receiver for 'figuralink:sync_backend'");
         } catch (Throwable t) {
             FiguraLink.LOGGER.debug("[FiguraLimit] Client networking receiver skipped: " + t.getMessage());
+        }
+    }
+
+    private static void registerAvatarUpdateReceiver() {
+        try {
+            Class<?> cpn = Class.forName("net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking");
+            Class<?> idClass = null;
+            try { idClass = Class.forName("net.minecraft.util.Identifier"); } 
+            catch (Throwable e) { idClass = Class.forName("net.minecraft.class_2960"); }
+
+            Object channelId = idClass.getConstructor(String.class, String.class).newInstance("figuralink", "avatar_update");
+
+            Class<?> handlerClass = Class.forName("net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking$PlayChannelHandler");
+            Object handler = Proxy.newProxyInstance(
+                handlerClass.getClassLoader(),
+                new Class<?>[]{handlerClass},
+                (proxy, method, args) -> {
+                    if ("receive".equals(method.getName()) && args != null && args.length >= 3) {
+                        Object buf = args[2];
+                        String ownerUuidStr = null;
+                        try {
+                            ownerUuidStr = (String) buf.getClass().getMethod("readString").invoke(buf);
+                        } catch (Throwable t) {
+                            try {
+                                ownerUuidStr = (String) buf.getClass().getMethod("method_10804").invoke(buf);
+                            } catch (Throwable ignored) {}
+                        }
+
+                            final String finalUuid = ownerUuidStr;
+                            FiguraLink.LOGGER.info("[FiguraLimit] Received avatar update packet for: {}", finalUuid);
+                            try {
+                                Class<?> mcClass = null;
+                                try { mcClass = Class.forName("net.minecraft.client.MinecraftClient"); }
+                                catch (Throwable e) { mcClass = Class.forName("net.minecraft.class_310"); }
+                                Object mc = mcClass.getMethod("getInstance").invoke(null);
+                                if (mc != null) {
+                                    Method exec = mc.getClass().getMethod("execute", Runnable.class);
+                                    exec.invoke(mc, (Runnable) () -> {
+                                        try {
+                                            UUID targetUUID = UUID.fromString(finalUuid);
+                                            Class<?> am = Class.forName("org.figuramc.figura.avatar.AvatarManager");
+                                            try {
+                                                Method clear = am.getMethod("clearAvatars", UUID.class);
+                                                clear.invoke(null, targetUUID);
+                                            } catch (Throwable ignored) {}
+                                            try {
+                                                Method reload = am.getMethod("reloadAvatar", UUID.class);
+                                                reload.invoke(null, targetUUID);
+                                            } catch (Throwable ignored) {}
+                                            FiguraLink.LOGGER.info("[FiguraLimit] Reloaded avatar cache for: {}", targetUUID);
+                                        } catch (Throwable ignored) {}
+                                    });
+                                }
+                            } catch (Throwable t) {
+                                try {
+                                    UUID targetUUID = UUID.fromString(finalUuid);
+                                    Class<?> am = Class.forName("org.figuramc.figura.avatar.AvatarManager");
+                                    try {
+                                        Method clear = am.getMethod("clearAvatars", UUID.class);
+                                        clear.invoke(null, targetUUID);
+                                    } catch (Throwable ignored) {}
+                                } catch (Throwable ignored) {}
+                            }
+                    }
+                    return null;
+                }
+            );
+
+            Method regMethod = cpn.getMethod("registerGlobalReceiver", idClass, handlerClass);
+            regMethod.invoke(null, channelId, handler);
+            FiguraLink.LOGGER.info("[FiguraLimit] Registered ClientPlayNetworking receiver for 'figuralink:avatar_update'");
+        } catch (Throwable t) {
+            FiguraLink.LOGGER.debug("[FiguraLimit] Avatar update receiver skipped: " + t.getMessage());
         }
     }
 
