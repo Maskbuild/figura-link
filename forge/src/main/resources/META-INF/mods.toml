@@ -24,7 +24,7 @@ description='''Companion mod unlocking avatar upload size limits on Figura serve
 
 [[dependencies.figuralink]]
     modId="figura"
-    mandatory=true
+    mandatory=false
     versionRange="*"
     ordering="AFTER"
     side="BOTH"
