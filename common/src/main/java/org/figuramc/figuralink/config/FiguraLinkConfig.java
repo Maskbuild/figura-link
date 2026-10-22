@@ -25,7 +25,44 @@ public class FiguraLinkConfig {
         return totalStorageLimit;
     }
 
+    public static boolean isClientEnvironment() {
+        try {
+            Class<?> flClass = Class.forName("net.fabricmc.loader.api.FabricLoader");
+            Object fl = flClass.getMethod("getInstance").invoke(null);
+            Object envType = flClass.getMethod("getEnvironmentType").invoke(fl);
+            if ("CLIENT".equalsIgnoreCase(String.valueOf(envType))) {
+                return true;
+            }
+        } catch (Throwable ignored) {}
+
+        try {
+            Class<?> fmlEnv = Class.forName("net.minecraftforge.fml.loading.FMLEnvironment");
+            Object dist = fmlEnv.getField("dist").get(null);
+            if ("CLIENT".equalsIgnoreCase(String.valueOf(dist))) {
+                return true;
+            }
+        } catch (Throwable ignored) {}
+
+        try {
+            Class.forName("net.minecraft.client.MinecraftClient");
+            return true;
+        } catch (Throwable ignored) {}
+
+        try {
+            Class.forName("net.minecraft.class_310");
+            return true;
+        } catch (Throwable ignored) {}
+
+        return false;
+    }
+
     public static void load() {
+        // NEVER create or write figura-limit.properties in client config!
+        if (isClientEnvironment()) {
+            FiguraLink.LOGGER.info("[FiguraLimit] Client environment detected - skipping client config generation.");
+            return;
+        }
+
         Path configPath = getConfigPath();
         Properties props = new Properties();
 
@@ -43,7 +80,7 @@ public class FiguraLinkConfig {
             }
         }
 
-        // Create default file if it doesn't exist
+        // Create default file ONLY on dedicated server
         saveDefault(configPath);
     }
 
@@ -56,7 +93,7 @@ public class FiguraLinkConfig {
         if (Files.exists(inRoot)) {
             return inRoot;
         }
-        // Standard Minecraft mod location: config/figura-limit.properties
+        // Standard Minecraft server mod location: config/figura-limit.properties
         return inConfig;
     }
 
@@ -80,7 +117,7 @@ public class FiguraLinkConfig {
                     """;
 
             Files.writeString(target, content);
-            FiguraLink.LOGGER.info("[FiguraLimit] Created default config at: " + target.toAbsolutePath());
+            FiguraLink.LOGGER.info("[FiguraLimit] Created default server config at: " + target.toAbsolutePath());
         } catch (Exception e) {
             FiguraLink.LOGGER.error("[FiguraLimit] Failed to create default " + CONFIG_FILENAME, e);
         }
