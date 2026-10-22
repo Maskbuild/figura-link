@@ -7,6 +7,24 @@ New-Item -ItemType Directory -Force $distDir | Out-Null
 $classesDir = Join-Path $PSScriptRoot "build_temp\classes"
 $staging = Join-Path $PSScriptRoot "build_temp\staging"
 
+if (Test-Path "$PSScriptRoot\build_temp") { Remove-Item -Recurse -Force "$PSScriptRoot\build_temp" }
+New-Item -ItemType Directory -Force $classesDir | Out-Null
+
+# Classpaths for compiling
+$mixin = "C:\Users\catiswin\.gradle\caches\modules-2\files-2.1\dev.architectury\mixin-patched\0.8.5.12\cf1f787f58d3b08b0cb53ecbba7928c09a1893c8\mixin-patched-0.8.5.12.jar"
+$slf4j = "C:\Users\catiswin\.gradle\caches\forge_gradle\maven_downloader\org\slf4j\slf4j-api\2.0.1\slf4j-api-2.0.1.jar"
+$fabric = "C:\Users\catiswin\.gradle\caches\modules-2\files-2.1\net.fabricmc\fabric-loader\0.15.11\9c2be53d84ec5c4fb58bb5b8d9c8a629047c9ee9\fabric-loader-0.15.11.jar"
+$fml = "C:\Users\catiswin\.gradle\caches\minecraftforge\forgegradle\mavenizer\caches\maven\forge\net\minecraftforge\javafmllanguage\1.21.1-52.1.16\javafmllanguage-1.21.1-52.1.16.jar"
+$cp = "$mixin;$slf4j;$fabric;$fml"
+
+Write-Host "Compiling Java sources with target Java 17 (--release 17)..."
+javac --release 17 -proc:none -cp $cp -d $classesDir `
+    common/src/main/java/org/figuramc/figuralink/FiguraLink.java `
+    common/src/main/java/org/figuramc/figuralink/config/FiguraLinkConfig.java `
+    common/src/main/java/org/figuramc/figuralink/mixin/NetworkStuffMixin.java `
+    fabric/src/main/java/org/figuramc/figuralink/fabric/FiguraLinkFabric.java `
+    forge/src/main/java/org/figuramc/figuralink/forge/FiguraLinkForge.java
+
 function New-ModJar {
     param (
         [string]$jarName,

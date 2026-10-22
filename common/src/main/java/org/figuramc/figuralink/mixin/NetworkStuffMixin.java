@@ -9,11 +9,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 @Mixin(targets = "org.figuramc.figura.backend2.NetworkStuff", remap = false)
 public class NetworkStuffMixin {
 
-    @Inject(method = "maxAvatarSize", at = @At("RETURN"), cancellable = true)
-    private static void onMaxAvatarSize(CallbackInfoReturnable<Integer> cir) {
-        int original = cir.getReturnValue();
+    @Inject(method = "getSizeLimit", at = @At("RETURN"), cancellable = true)
+    private static void onGetSizeLimit(CallbackInfoReturnable<Integer> cir) {
         int configLimit = FiguraLinkConfig.getMaxAvatarSize();
-        if (original < configLimit && original > 0) {
+        if (configLimit > 0) {
             cir.setReturnValue(configLimit);
         }
     }
