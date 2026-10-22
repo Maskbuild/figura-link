@@ -63,13 +63,38 @@ public class FiguraServerSync {
         }
     }
 
-    public static void sendBackendAddressToPlayer(Object serverPlayer) {
         String publicAddr = FiguraLinkConfig.getPublicBackendAddress();
+        boolean isLocalhost = false;
+        try {
+            for (java.lang.reflect.Field f : serverPlayer.getClass().getFields()) {
+                if (f.getName().equals("networkHandler") || f.getName().equals("field_13987")) {
+                    Object nh = f.get(serverPlayer);
+                    if (nh != null) {
+                        for (java.lang.reflect.Field cf : nh.getClass().getFields()) {
+                            if (cf.getName().equals("connection") || cf.getName().equals("field_14384")) {
+                                Object conn = cf.get(nh);
+                                if (conn != null) {
+                                    Method m = conn.getClass().getMethod("getAddress");
+                                    Object addr = m.invoke(conn);
+                                    if (addr != null && addr.toString().contains("127.0.0.1")) {
+                                        isLocalhost = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+
         String address;
-        if (publicAddr != null && !publicAddr.trim().isEmpty()) {
+        if (isLocalhost) {
+            address = "127.0.0.1:" + FiguraLinkConfig.getBackendPort();
+        } else if (publicAddr != null && !publicAddr.trim().isEmpty()) {
             address = publicAddr.trim();
         } else {
             address = "127.0.0.1:" + FiguraLinkConfig.getBackendPort();
+            FiguraLink.LOGGER.warn("[FiguraLimit] Remote player joined but 'public-backend-address' is empty in figura-limit.properties! External players need a public tunnel address to sync avatars.");
         }
 
         try {
