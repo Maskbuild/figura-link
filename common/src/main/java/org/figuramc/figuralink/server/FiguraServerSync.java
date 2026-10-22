@@ -63,6 +63,7 @@ public class FiguraServerSync {
         }
     }
 
+    public static void sendBackendAddressToPlayer(Object serverPlayer) {
         String publicAddr = FiguraLinkConfig.getPublicBackendAddress();
         boolean isLocalhost = false;
         try {
