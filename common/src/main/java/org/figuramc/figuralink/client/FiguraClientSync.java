@@ -20,7 +20,7 @@ public class FiguraClientSync {
             try {
                 Thread.sleep(1500);
                 int port = FiguraLinkConfig.getBackendPort();
-                java.net.URL url = new java.net.URL("http://127.0.0.1:" + port + "/version");
+                java.net.URL url = java.net.URI.create("http://127.0.0.1:" + port + "/version").toURL();
                 java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
                 conn.setConnectTimeout(800);
                 conn.setReadTimeout(800);
@@ -91,14 +91,16 @@ public class FiguraClientSync {
                 }
             );
 
+            Class<?> eventClass = Class.forName("net.fabricmc.fabric.api.event.Event");
             Method regMethod = null;
-            for (Method m : joinEvent.getClass().getMethods()) {
+            for (Method m : eventClass.getMethods()) {
                 if ("register".equals(m.getName()) && m.getParameterCount() == 1) {
                     regMethod = m;
                     break;
                 }
             }
             if (regMethod != null) {
+                regMethod.setAccessible(true);
                 regMethod.invoke(joinEvent, listener);
                 FiguraLink.LOGGER.info("[FiguraLimit] Registered ClientPlayConnectionEvents.JOIN for client auto-switch.");
             }
@@ -112,7 +114,7 @@ public class FiguraClientSync {
 
         // 1. If local embedded backend is alive on 127.0.0.1, connect immediately
         try {
-            java.net.URL url = new java.net.URL("http://127.0.0.1:" + port + "/version");
+            java.net.URL url = java.net.URI.create("http://127.0.0.1:" + port + "/version").toURL();
             java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
             conn.setConnectTimeout(800);
             conn.setReadTimeout(800);

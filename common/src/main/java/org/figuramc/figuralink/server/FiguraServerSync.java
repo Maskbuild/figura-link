@@ -45,14 +45,16 @@ public class FiguraServerSync {
                 }
             );
 
+            Class<?> eventClass = Class.forName("net.fabricmc.fabric.api.event.Event");
             Method regMethod = null;
-            for (Method m : joinEvent.getClass().getMethods()) {
+            for (Method m : eventClass.getMethods()) {
                 if ("register".equals(m.getName()) && m.getParameterCount() == 1) {
                     regMethod = m;
                     break;
                 }
             }
             if (regMethod != null) {
+                regMethod.setAccessible(true);
                 regMethod.invoke(joinEvent, listener);
                 FiguraLink.LOGGER.info("[FiguraLimit] Registered ServerPlayConnectionEvents.JOIN for backend auto-sync.");
             } else {
