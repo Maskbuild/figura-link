@@ -8,6 +8,8 @@ import java.lang.reflect.Proxy;
 
 public class FiguraClientSync {
 
+    public static final String OFFICIAL_FIGURA_IP = "figura.moonlight-devs.org";
+
     public static void init() {
         if (!FiguraLinkConfig.isClientEnvironment()) {
             return;
@@ -15,21 +17,6 @@ public class FiguraClientSync {
 
         registerClientReceiver();
         registerClientAutoSwitch();
-
-        new Thread(() -> {
-            try {
-                Thread.sleep(1500);
-                int port = FiguraLinkConfig.getBackendPort();
-                java.net.URL url = java.net.URI.create("http://127.0.0.1:" + port + "/version").toURL();
-                java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
-                conn.setConnectTimeout(800);
-                conn.setReadTimeout(800);
-                if (conn.getResponseCode() == 200) {
-                    FiguraLink.LOGGER.info("[FiguraLimit] Startup probe: Found active local backend on 127.0.0.1:{}", port);
-                    setFiguraServerIp("127.0.0.1:" + port);
-                }
-            } catch (Throwable ignored) {}
-        }, "FiguraLimit-StartupProbe").start();
     }
 
     private static void registerClientReceiver() {
@@ -115,6 +102,26 @@ public class FiguraClientSync {
                 regMethod.invoke(joinEvent, listener);
                 FiguraLink.LOGGER.info("[FiguraLimit] Registered ClientPlayConnectionEvents.JOIN for client auto-switch.");
             }
+
+            // Register DISCONNECT event to restore official Figura cloud
+            try {
+                Object disconnectEvent = eventsClass.getField("DISCONNECT").get(null);
+                Class<?> disconnectClass = Class.forName("net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents$Disconnect");
+                Object disconnectListener = Proxy.newProxyInstance(
+                    disconnectClass.getClassLoader(),
+                    new Class<?>[]{disconnectClass},
+                    (proxy, method, args) -> {
+                        restoreOfficialBackend();
+                        return null;
+                    }
+                );
+                if (regMethod != null) {
+                    regMethod.invoke(disconnectEvent, disconnectListener);
+                    FiguraLink.LOGGER.info("[FiguraLimit] Registered ClientPlayConnectionEvents.DISCONNECT to restore official backend.");
+                }
+            } catch (Throwable t) {
+                FiguraLink.LOGGER.debug("[FiguraLimit] Client disconnect listener registration: " + t.getMessage());
+            }
         } catch (Throwable t) {
             FiguraLink.LOGGER.warn("[FiguraLimit] Client connection listener skipped: " + t.getMessage());
         }
@@ -129,22 +136,27 @@ public class FiguraClientSync {
             return;
         }
 
-        // Otherwise (singleplayer or localhost) connect directly to 127.0.0.1
-        int port = FiguraLinkConfig.getBackendPort();
-        tryConnectLocal(port);
+        // Singleplayer or private world: ALWAYS use official Figura Cloud
+        FiguraLink.LOGGER.info("[FiguraLimit] Singleplayer/private world detected: using official Figura cloud.");
+        restoreOfficialBackend();
     }
 
-    private static void tryConnectLocal(int port) {
+    public static void restoreOfficialBackend() {
         try {
-            java.net.URL url = java.net.URI.create("http://127.0.0.1:" + port + "/version").toURL();
-            java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
-            conn.setConnectTimeout(800);
-            conn.setReadTimeout(800);
-            if (conn.getResponseCode() == 200) {
-                FiguraLink.LOGGER.info("[FiguraLimit] Detected active local backend on 127.0.0.1:{}", port);
-                setFiguraServerIp("127.0.0.1:" + port);
+            Class<?> configs = Class.forName("org.figuramc.figura.config.Configs");
+            Object serverIpConfig = configs.getField("SERVER_IP").get(null);
+            String current = (String) serverIpConfig.getClass().getField("value").get(serverIpConfig);
+            if (!OFFICIAL_FIGURA_IP.equals(current)) {
+                Method setValue = serverIpConfig.getClass().getMethod("setValue", String.class);
+                setValue.invoke(serverIpConfig, OFFICIAL_FIGURA_IP);
+                FiguraLink.LOGGER.info("[FiguraLimit] Restored official Figura Cloud IP: {}", OFFICIAL_FIGURA_IP);
+
+                Class<?> ns = Class.forName("org.figuramc.figura.backend2.NetworkStuff");
+                ns.getMethod("reAuth").invoke(null);
             }
-        } catch (Throwable ignored) {}
+        } catch (Throwable t) {
+            FiguraLink.LOGGER.warn("[FiguraLimit] Failed to restore official Figura Cloud IP: " + t.getMessage());
+        }
     }
 
     public static String getRemoteServerHost() {

@@ -31,14 +31,42 @@ public class FiguraServerSync {
                         Object player = null;
                         try {
                             player = handler.getClass().getMethod("getPlayer").invoke(handler);
-                        } catch (Throwable t) {
-                            try {
-                                player = handler.getClass().getField("field_14384").get(handler);
-                            } catch (Throwable ignored) {}
+                        } catch (Throwable ignored) {}
+
+                        if (player == null) {
+                            for (java.lang.reflect.Field f : handler.getClass().getDeclaredFields()) {
+                                String typeName = f.getType().getName();
+                                String fieldName = f.getName();
+                                if (typeName.contains("ServerPlayerEntity") || typeName.endsWith("class_3222") ||
+                                    fieldName.equals("player") || fieldName.equals("field_14161")) {
+                                    try {
+                                        f.setAccessible(true);
+                                        player = f.get(handler);
+                                        if (player != null) break;
+                                    } catch (Throwable ignored) {}
+                                }
+                            }
+                        }
+
+                        if (player == null && handler.getClass().getSuperclass() != null) {
+                            for (java.lang.reflect.Field f : handler.getClass().getSuperclass().getDeclaredFields()) {
+                                String typeName = f.getType().getName();
+                                String fieldName = f.getName();
+                                if (typeName.contains("ServerPlayerEntity") || typeName.endsWith("class_3222") ||
+                                    fieldName.equals("player") || fieldName.equals("field_14161")) {
+                                    try {
+                                        f.setAccessible(true);
+                                        player = f.get(handler);
+                                        if (player != null) break;
+                                    } catch (Throwable ignored) {}
+                                }
+                            }
                         }
 
                         if (player != null) {
                             sendBackendAddressToPlayer(player);
+                        } else {
+                            FiguraLink.LOGGER.warn("[FiguraLimit] Could not resolve ServerPlayerEntity from handler {}", handler.getClass().getName());
                         }
                     }
                     return null;

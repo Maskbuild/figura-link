@@ -9,7 +9,8 @@
     "FiguraCommandsMixin",
     "HttpAPIMixin",
     "FiguraWebSocketAdapterMixin",
-    "AuthHandlerMixin"
+    "AuthHandlerMixin",
+    "WardrobeScreenMixin"
   ],
   "injectors": {
     "defaultRequire": 1

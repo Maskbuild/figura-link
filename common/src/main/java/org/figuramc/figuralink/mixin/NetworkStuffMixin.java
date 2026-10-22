@@ -21,6 +21,13 @@ public class NetworkStuffMixin {
         }
     }
 
+    @Inject(method = "canUpload", at = @At("HEAD"), cancellable = true)
+    private static void onCanUpload(CallbackInfoReturnable<Boolean> cir) {
+        if (FiguraLinkUtil.isCustomBackend()) {
+            cir.setReturnValue(true);
+        }
+    }
+
     @Inject(method = "isConnected", at = @At("HEAD"), cancellable = true)
     private static void onIsConnected(CallbackInfoReturnable<Boolean> cir) {
         if (FiguraLinkUtil.isCustomBackend()) {
@@ -54,6 +61,14 @@ public class NetworkStuffMixin {
                 Field reasonField = ns.getDeclaredField("disconnectedReason");
                 reasonField.setAccessible(true);
                 reasonField.set(null, null);
+
+                Field uploadRateField = ns.getDeclaredField("uploadRate");
+                uploadRateField.setAccessible(true);
+                Object uploadRate = uploadRateField.get(null);
+                if (uploadRate != null) {
+                    java.lang.reflect.Method setMethod = uploadRate.getClass().getMethod("set", double.class);
+                    setMethod.invoke(uploadRate, 50.0);
+                }
 
                 Field apiField = ns.getDeclaredField("api");
                 apiField.setAccessible(true);
