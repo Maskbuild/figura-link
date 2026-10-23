@@ -66,18 +66,20 @@ public class FiguraPacketUtil {
         return null;
     }
 
-    public static void writeString(Object buf, String str) {
-        if (buf == null || str == null) return;
+    public static int readableBytes(Object buf) {
+        if (buf == null) return 0;
         try {
-            buf.getClass().getMethod("writeString", String.class).invoke(buf, str);
-            return;
+            return (Integer) buf.getClass().getMethod("readableBytes").invoke(buf);
         } catch (Throwable ignored) {}
         try {
-            buf.getClass().getMethod("method_10814", String.class).invoke(buf, str);
-            return;
+            return (Integer) buf.getClass().getMethod("method_10819").invoke(buf);
         } catch (Throwable ignored) {}
+        return Integer.MAX_VALUE;
+    }
 
-        // ByteBuf fallback
+    public static void writeString(Object buf, String str) {
+        if (buf == null) return;
+        if (str == null) str = "";
         byte[] bytes = str.getBytes(StandardCharsets.UTF_8);
         writeInt(buf, bytes.length);
         writeRawBytes(buf, bytes);
@@ -85,15 +87,17 @@ public class FiguraPacketUtil {
 
     public static String readString(Object buf) {
         if (buf == null) return "";
-        try {
-            return (String) buf.getClass().getMethod("readString").invoke(buf);
-        } catch (Throwable ignored) {}
-        try {
-            return (String) buf.getClass().getMethod("method_10804").invoke(buf);
-        } catch (Throwable ignored) {}
-
         int len = readInt(buf);
-        if (len <= 0 || len > 1024 * 1024) return "";
+        if (len <= 0) return "";
+        if (len > 32767) {
+            FiguraLink.LOGGER.warn("[FiguraLimit] readString rejected abnormal length: {}", len);
+            return "";
+        }
+        int available = readableBytes(buf);
+        if (len > available) {
+            len = available;
+        }
+        if (len <= 0) return "";
         byte[] bytes = readRawBytes(buf, len);
         return new String(bytes, StandardCharsets.UTF_8);
     }
@@ -122,7 +126,7 @@ public class FiguraPacketUtil {
 
     public static void writeByteArray(Object buf, byte[] data) {
         if (buf == null) return;
-        if (data == null) {
+        if (data == null || data.length == 0) {
             writeInt(buf, 0);
             return;
         }
@@ -133,11 +137,21 @@ public class FiguraPacketUtil {
     public static byte[] readByteArray(Object buf) {
         if (buf == null) return new byte[0];
         int len = readInt(buf);
-        if (len <= 0 || len > 50 * 1024 * 1024) return new byte[0];
+        if (len <= 0) return new byte[0];
+        if (len > 30 * 1024 * 1024) {
+            FiguraLink.LOGGER.warn("[FiguraLimit] readByteArray rejected abnormal length: {}", len);
+            return new byte[0];
+        }
+        int available = readableBytes(buf);
+        if (len > available) {
+            len = available;
+        }
+        if (len <= 0) return new byte[0];
         return readRawBytes(buf, len);
     }
 
     private static void writeRawBytes(Object buf, byte[] data) {
+        if (buf == null || data == null || data.length == 0) return;
         try {
             buf.getClass().getMethod("writeBytes", byte[].class).invoke(buf, data);
             return;
@@ -148,6 +162,7 @@ public class FiguraPacketUtil {
     }
 
     private static byte[] readRawBytes(Object buf, int len) {
+        if (buf == null || len <= 0) return new byte[0];
         byte[] res = new byte[len];
         try {
             buf.getClass().getMethod("readBytes", byte[].class).invoke(buf, res);

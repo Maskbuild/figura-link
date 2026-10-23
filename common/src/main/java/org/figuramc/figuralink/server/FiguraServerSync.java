@@ -82,15 +82,14 @@ public class FiguraServerSync {
 
                         // Schedule sync across multiple delays to guarantee client receipt
                         new Thread(() -> {
-                            int[] delays = new int[]{0, 200, 600, 1500};
+                            int[] delays = new int[]{0, 500};
                             for (int delay : delays) {
                                 if (delay > 0) {
                                     try { Thread.sleep(delay); } catch (InterruptedException ignored) {}
                                 }
                                 if (sender != null) {
                                     sendViaPacketSender(sender);
-                                }
-                                if (player != null) {
+                                } else if (player != null) {
                                     sendBackendAddressToPlayer(player);
                                 }
                             }
@@ -328,10 +327,13 @@ public class FiguraServerSync {
         if (player == null) return;
         new Thread(() -> {
             try { Thread.sleep(1000); } catch (InterruptedException ignored) {}
+            java.util.UUID playerUuid = FiguraDriveBossBar.getPlayerUuid(player);
+            String playerUuidStr = (playerUuid != null) ? playerUuid.toString() : "";
             Map<String, String> equipped = EmbeddedFiguraServer.getUserEquippedMap();
             FiguraLink.LOGGER.info("[FiguraLimit] Syncing {} server avatars to new player...", equipped.size());
             for (Map.Entry<String, String> entry : equipped.entrySet()) {
                 String owner = entry.getKey();
+                if (owner.equalsIgnoreCase(playerUuidStr)) continue; // Don't stream player's own avatar back to them
                 String hash = entry.getValue();
                 byte[] data = EmbeddedFiguraServer.getAvatarBytes(owner);
                 if (data != null && data.length > 0) {
