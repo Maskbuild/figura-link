@@ -68,18 +68,67 @@ public class FiguraLinkConfig {
     }
 
     public static void load() {
+        // 1. Check for web-dashboard generated config: config/figura-cloud-link.json
+        Path jsonPath = Paths.get("config", "figura-cloud-link.json");
+        if (!Files.exists(jsonPath)) {
+            jsonPath = Paths.get("figura-cloud-link.json");
+        }
+        if (Files.exists(jsonPath)) {
+            try {
+                String content = Files.readString(jsonPath);
+                java.util.regex.Matcher mCloud = java.util.regex.Pattern.compile("\"cloudUrl\"\\s*:\\s*\"([^\"]+)\"").matcher(content);
+                java.util.regex.Matcher mSecret = java.util.regex.Pattern.compile("\"serverSecret\"\\s*:\\s*\"([^\"]+)\"").matcher(content);
+                if (mCloud.find()) {
+                    String raw = mCloud.group(1).trim();
+                    boolean isHttps = raw.startsWith("https://");
+                    String clean = raw.replaceFirst("^(http://|https://)", "");
+                    if (clean.endsWith("/api")) {
+                        clean = clean.substring(0, clean.length() - 4);
+                    } else if (clean.endsWith("/api/")) {
+                        clean = clean.substring(0, clean.length() - 5);
+                    }
+                    while (clean.endsWith("/")) {
+                        clean = clean.substring(0, clean.length() - 1);
+                    }
+                    // If no port specified and raw IP address, add :8080 default
+                    String hostPart = clean.split("/")[0];
+                    if (!hostPart.contains(":") && !isHttps) {
+                        clean = clean.replaceFirst(hostPart, hostPart + ":8080");
+                    }
+                    backendAddress = clean;
+                    backendUrl = (isHttps ? "https://" : "http://") + clean.split("/")[0];
+                }
+                if (mSecret.find()) {
+                    serverSecret = mSecret.group(1).trim();
+                }
+                FiguraLink.LOGGER.info("[FiguraLimit] Loaded config from figura-cloud-link.json: backendAddress='{}', backendUrl='{}'", 
+                        backendAddress, backendUrl);
+            } catch (Throwable t) {
+                FiguraLink.LOGGER.warn("[FiguraLimit] Error parsing figura-cloud-link.json: " + t.getMessage());
+            }
+        }
+
         Path configPath = getConfigPath();
         Properties props = new Properties();
 
         if (Files.exists(configPath)) {
             try (InputStream in = Files.newInputStream(configPath)) {
                 props.load(in);
-                backendAddress = props.getProperty("backend-address", "").trim();
-                if (backendAddress.isEmpty()) {
-                    backendAddress = props.getProperty("public-backend-address", "").trim();
+                String propAddr = props.getProperty("backend-address", "").trim();
+                if (propAddr.isEmpty()) {
+                    propAddr = props.getProperty("public-backend-address", "").trim();
                 }
-                backendUrl = props.getProperty("backend-url", "").trim();
-                serverSecret = props.getProperty("server-secret", "").trim();
+                if (!propAddr.isEmpty()) {
+                    backendAddress = propAddr;
+                }
+                String propUrl = props.getProperty("backend-url", "").trim();
+                if (!propUrl.isEmpty()) {
+                    backendUrl = propUrl;
+                }
+                String propSecret = props.getProperty("server-secret", "").trim();
+                if (!propSecret.isEmpty()) {
+                    serverSecret = propSecret;
+                }
                 String sizeStr = props.getProperty("max-avatar-size", "5MB").trim();
 
                 maxAvatarSize = (int) parseBytes(sizeStr, 5 * 1024 * 1024);
