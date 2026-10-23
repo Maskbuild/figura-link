@@ -2,6 +2,7 @@ package org.figuramc.figuralink.client;
 
 import org.figuramc.figuralink.FiguraLink;
 import org.figuramc.figuralink.config.FiguraLinkConfig;
+import org.figuramc.figuralink.util.FiguraLinkUtil;
 
 import java.io.InputStream;
 import java.lang.reflect.Field;
@@ -12,6 +13,7 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.URL;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class FiguraClientSync {
 
@@ -25,6 +27,7 @@ public class FiguraClientSync {
         registerClientReceiver();
         registerAvatarUpdateReceiver();
         registerClientAutoSwitch();
+        startPeriodicAvatarPoller();
     }
 
     private static void registerClientReceiver() {
@@ -147,26 +150,7 @@ public class FiguraClientSync {
                                             return;
                                         }
 
-                                        Class<?> am = Class.forName("org.figuramc.figura.avatar.AvatarManager");
-                                        
-                                        try {
-                                            Method clear = am.getMethod("clearAvatars", UUID.class);
-                                            clear.invoke(null, targetUUID);
-                                        } catch (Throwable ignored) {}
-
-                                        try {
-                                            Method fetchBackend = am.getDeclaredMethod("fetchBackend", UUID.class);
-                                            fetchBackend.setAccessible(true);
-                                            fetchBackend.invoke(null, targetUUID);
-                                            FiguraLink.LOGGER.info("[FiguraLimit] Successfully triggered fetchBackend for remote player: {}", targetUUID);
-                                        } catch (Throwable t) {
-                                            try {
-                                                Method reload = am.getMethod("reloadAvatar", UUID.class);
-                                                reload.invoke(null, targetUUID);
-                                            } catch (Throwable ignored) {}
-                                        }
-
-                                        FiguraLink.LOGGER.info("[FiguraLimit] Reloaded avatar cache for: {}", targetUUID);
+                                        reloadRemotePlayerAvatar(mc, targetUUID);
                                     } catch (Throwable ignored) {}
                                 });
                             }
@@ -566,5 +550,172 @@ public class FiguraClientSync {
             FiguraLink.LOGGER.warn("[FiguraLimit] Failed to update Figura Cloud IP to " + target + ": " + t.getMessage());
             return false;
         }
+    }
+
+    private static final java.util.Map<UUID, String> knownRemoteAvatarHashes = new ConcurrentHashMap<>();
+    private static volatile boolean pollerRunning = false;
+
+    private static void startPeriodicAvatarPoller() {
+        if (pollerRunning) return;
+        pollerRunning = true;
+
+        Thread pollerThread = new Thread(() -> {
+            while (true) {
+                try {
+                    Thread.sleep(3000); // Check every 3 seconds
+
+                    if (!FiguraLinkUtil.isCustomBackend() || isSingleplayer()) {
+                        knownRemoteAvatarHashes.clear();
+                        continue;
+                    }
+
+                    Object mc = getMinecraftClientInstance();
+                    if (mc == null) continue;
+
+                    String remoteHost = getRemoteServerHost();
+                    if (remoteHost == null || remoteHost.isEmpty() || remoteHost.equals("127.0.0.1") || remoteHost.equals("localhost")) {
+                        continue;
+                    }
+
+                    int backendPort = FiguraLinkConfig.getBackendPort();
+                    String baseUrl = "http://" + remoteHost + ":" + backendPort;
+
+                    UUID localUuid = null;
+                    try {
+                        Class<?> fm = Class.forName("org.figuramc.figura.FiguraMod");
+                        Object u = fm.getMethod("getLocalPlayerUUID").invoke(null);
+                        if (u instanceof UUID) localUuid = (UUID) u;
+                    } catch (Throwable ignored) {}
+
+                    java.util.Collection<UUID> currentPlayers = getClientOnlinePlayerUUIDs(mc);
+                    if (currentPlayers == null || currentPlayers.isEmpty()) continue;
+
+                    for (UUID playerUuid : currentPlayers) {
+                        if (localUuid != null && playerUuid.equals(localUuid)) {
+                            continue;
+                        }
+
+                        String hash = fetchEquippedHashFromBackend(baseUrl, playerUuid);
+                        if (hash == null) continue;
+
+                        String previousHash = knownRemoteAvatarHashes.get(playerUuid);
+                        if (previousHash == null) {
+                            knownRemoteAvatarHashes.put(playerUuid, hash);
+                        } else if (!previousHash.equals(hash)) {
+                            FiguraLink.LOGGER.info("[FiguraLimit] Detected avatar change via background poll for {}: old={}, new={}", 
+                                    playerUuid, previousHash, hash);
+                            knownRemoteAvatarHashes.put(playerUuid, hash);
+
+                            reloadRemotePlayerAvatar(mc, playerUuid);
+                        }
+                    }
+                } catch (Throwable ignored) {}
+            }
+        }, "FiguraLimit-AvatarPoller");
+        pollerThread.setDaemon(true);
+        pollerThread.start();
+        FiguraLink.LOGGER.info("[FiguraLimit] Started background real-time avatar poller.");
+    }
+
+    private static String fetchEquippedHashFromBackend(String baseUrl, UUID playerUuid) {
+        try {
+            URL url = new URL(baseUrl + "/" + playerUuid.toString());
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setConnectTimeout(1500);
+            conn.setReadTimeout(1500);
+            int code = conn.getResponseCode();
+            if (code == 200) {
+                try (InputStream in = conn.getInputStream()) {
+                    String json = new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+                    java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"hash\"\\s*:\\s*\"([^\"]+)\"").matcher(json);
+                    if (m.find()) {
+                        return m.group(1);
+                    }
+                    return "empty";
+                }
+            }
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    public static void reloadRemotePlayerAvatar(Object mc, UUID targetUUID) {
+        if (mc == null || targetUUID == null) return;
+        try {
+            Method exec = mc.getClass().getMethod("execute", Runnable.class);
+            exec.invoke(mc, (Runnable) () -> {
+                try {
+                    Class<?> am = Class.forName("org.figuramc.figura.avatar.AvatarManager");
+                    try {
+                        Method clear = am.getMethod("clearAvatars", UUID.class);
+                        clear.invoke(null, targetUUID);
+                    } catch (Throwable ignored) {}
+
+                    try {
+                        Method fetchBackend = am.getDeclaredMethod("fetchBackend", UUID.class);
+                        fetchBackend.setAccessible(true);
+                        fetchBackend.invoke(null, targetUUID);
+                        FiguraLink.LOGGER.info("[FiguraLimit] Triggered fetchBackend for remote player: {}", targetUUID);
+                    } catch (Throwable t) {
+                        try {
+                            Method reload = am.getMethod("reloadAvatar", UUID.class);
+                            reload.invoke(null, targetUUID);
+                        } catch (Throwable ignored) {}
+                    }
+
+                    FiguraLink.LOGGER.info("[FiguraLimit] Successfully refreshed avatar for remote player: {}", targetUUID);
+                } catch (Throwable ignored) {}
+            });
+        } catch (Throwable ignored) {}
+    }
+
+    public static java.util.Collection<UUID> getClientOnlinePlayerUUIDs(Object mc) {
+        java.util.Set<UUID> list = new java.util.HashSet<>();
+        try {
+            Object nh = null;
+            for (String mName : new String[]{"getNetworkHandler", "method_1562"}) {
+                try {
+                    nh = mc.getClass().getMethod(mName).invoke(mc);
+                    if (nh != null) break;
+                } catch (Throwable ignored) {}
+            }
+            if (nh != null) {
+                Object playerEntries = null;
+                for (String mName : new String[]{"getPlayerList", "method_2880", "getPlayerUuids", "method_31363"}) {
+                    try {
+                        playerEntries = nh.getClass().getMethod(mName).invoke(nh);
+                        if (playerEntries != null) break;
+                    } catch (Throwable ignored) {}
+                }
+                if (playerEntries instanceof java.util.Collection) {
+                    for (Object entry : (java.util.Collection<?>) playerEntries) {
+                        if (entry instanceof UUID) {
+                            list.add((UUID) entry);
+                        } else if (entry != null) {
+                            try {
+                                Method getProfile = null;
+                                for (String pName : new String[]{"getProfile", "method_2966"}) {
+                                    try {
+                                        getProfile = entry.getClass().getMethod(pName);
+                                        break;
+                                    } catch (Throwable ignored) {}
+                                }
+                                if (getProfile != null) {
+                                    Object profile = getProfile.invoke(entry);
+                                    if (profile != null) {
+                                        Method getId = profile.getClass().getMethod("getId");
+                                        Object id = getId.invoke(profile);
+                                        if (id instanceof UUID) {
+                                            list.add((UUID) id);
+                                        }
+                                    }
+                                }
+                            } catch (Throwable ignored) {}
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+        return list;
     }
 }
