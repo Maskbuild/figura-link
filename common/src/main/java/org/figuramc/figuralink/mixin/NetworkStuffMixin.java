@@ -138,37 +138,6 @@ public class NetworkStuffMixin {
                     connectAPI.setAccessible(true);
                     connectAPI.invoke(null, playerUuid);
                 }
-
-                // Auto-upload changed avatar when selected in Wardrobe
-                try {
-                    Class<?> am = Class.forName("org.figuramc.figura.avatar.AvatarManager");
-                    Field luField = am.getDeclaredField("localUploaded");
-                    luField.setAccessible(true);
-                    boolean isUploaded = luField.getBoolean(null);
-
-                    if (!isUploaded) {
-                        Class<?> fm = Class.forName("org.figuramc.figura.FiguraMod");
-                        Object localUuid = fm.getMethod("getLocalPlayerUUID").invoke(null);
-                        if (localUuid instanceof UUID) {
-                            Method getAvatar = am.getMethod("getAvatarForPlayer", UUID.class);
-                            Object avatar = getAvatar.invoke(null, localUuid);
-                            if (avatar != null) {
-                                Field nbtField = avatar.getClass().getField("nbt");
-                                Field loadedField = avatar.getClass().getField("loaded");
-                                Object nbt = nbtField.get(avatar);
-                                boolean loaded = loadedField.getBoolean(avatar);
-
-                                if (loaded && nbt != null) {
-                                    luField.setBoolean(null, true);
-                                    FiguraLink.LOGGER.info("[FiguraLimit] Auto-uploading changed avatar to server backend...");
-                                    Method uploadMethod = ns.getMethod("uploadAvatar", avatar.getClass());
-                                    uploadMethod.invoke(null, avatar);
-                                }
-                            }
-                        }
-                    }
-                } catch (Throwable ignored) {}
-
             } catch (Throwable ignored) {}
         }
     }
