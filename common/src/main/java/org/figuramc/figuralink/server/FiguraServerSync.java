@@ -128,7 +128,12 @@ public class FiguraServerSync {
                             Object player = resolvePlayer(args[0]);
                             if (player != null) {
                                 onlinePlayers.remove(player);
+                                java.util.UUID uuid = FiguraDriveBossBar.getPlayerUuid(player);
+                                if (uuid != null) {
+                                    EmbeddedFiguraServer.removeAvatarMemory(uuid.toString());
+                                }
                                 FiguraDriveBossBar.onPlayerDisconnect(player);
+                                FiguraDriveBossBar.updateBossBar();
                             }
                         }
                         return null;

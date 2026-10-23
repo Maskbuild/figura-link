@@ -30,24 +30,38 @@ public class FiguraDriveBossBar {
 
     public static DriveStats getDriveStats() {
         DriveStats stats = new DriveStats();
+
+        // 1. In-memory ephemeral RAM cache stats
+        int memUsers = EmbeddedFiguraServer.getMemoryUserCount();
+        long memBytes = EmbeddedFiguraServer.getMemoryTotalBytes();
+
+        // 2. Disk avatars stats
         Path avatarsDir = Paths.get("figura", "avatars");
         if (!Files.exists(avatarsDir)) {
             avatarsDir = Paths.get("figura-avatars");
         }
+        int diskAvatars = 0;
+        int diskUsers = 0;
+        long diskBytes = 0;
         if (Files.exists(avatarsDir)) {
             try (Stream<Path> stream = Files.walk(avatarsDir)) {
                 List<Path> files = stream.filter(Files::isRegularFile).toList();
-                stats.avatarCount = files.size();
+                diskAvatars = files.size();
                 for (Path p : files) {
                     try {
-                        stats.totalBytes += Files.size(p);
+                        diskBytes += Files.size(p);
                     } catch (IOException ignored) {}
                 }
             } catch (Exception ignored) {}
             try (Stream<Path> stream = Files.list(avatarsDir)) {
-                stats.userCount = (int) stream.filter(Files::isDirectory).count();
+                diskUsers = (int) stream.filter(Files::isDirectory).count();
             } catch (Exception ignored) {}
         }
+
+        stats.avatarCount = memUsers + diskAvatars;
+        stats.userCount = Math.max(memUsers, diskUsers);
+        stats.totalBytes = memBytes + diskBytes;
+
         if (stats.totalLimit > 0) {
             stats.percent = (stats.totalBytes * 100.0) / (double) stats.totalLimit;
         }

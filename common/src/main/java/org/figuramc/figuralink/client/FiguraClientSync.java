@@ -210,6 +210,9 @@ public class FiguraClientSync {
                     (proxy, method, args) -> {
                         FiguraLink.LOGGER.info("[FiguraLimit] Client disconnected from server: maintaining unified local link.");
                         setFiguraServerIp(UNIFIED_LOCAL_LINK);
+                        UUID localUuid = getLocalPlayerUuid();
+                        String localUuidStr = localUuid != null ? localUuid.toString() : "default";
+                        EmbeddedFiguraServer.clearRemoteMemoryAvatars(localUuidStr);
                         return null;
                     }
                 );

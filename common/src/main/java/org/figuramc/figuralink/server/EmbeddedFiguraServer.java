@@ -23,6 +23,7 @@ public class EmbeddedFiguraServer {
     private static final Map<String, String> authChallenges = new ConcurrentHashMap<>();
     private static final Map<String, String> playerTokens = new ConcurrentHashMap<>();
     private static final Map<String, String> userEquipped = new ConcurrentHashMap<>();
+    private static final Map<String, byte[]> memoryAvatars = new ConcurrentHashMap<>();
     private static final Path AVATARS_DIR = Paths.get("figura", "avatars");
     private static final Path EQUIPPED_FILE = AVATARS_DIR.resolve("equipped.properties");
 
@@ -147,33 +148,57 @@ public class EmbeddedFiguraServer {
         return AVATARS_DIR;
     }
 
-    public static boolean saveAvatarFile(String owner, String hash, byte[] data) {
-        try {
-            if (owner == null || data == null || data.length == 0) return false;
-            Path userDir = AVATARS_DIR.resolve(owner);
-            Files.createDirectories(userDir);
-            Files.write(userDir.resolve("avatar"), data);
-            if (hash != null && !hash.isEmpty() && !hash.equals("avatar")) {
-                Files.write(userDir.resolve(hash), data);
-                userEquipped.put(owner, hash);
-            } else {
-                String computed = getSha256(data);
-                Files.write(userDir.resolve(computed), data);
-                userEquipped.put(owner, computed);
-            }
-            saveEquippedState();
-            FiguraLink.LOGGER.info("[FiguraLimit] Stored avatar for {} (size: {} bytes, hash: {})", 
-                    owner, data.length, userEquipped.get(owner));
-            return true;
-        } catch (Throwable t) {
-            FiguraLink.LOGGER.warn("[FiguraLimit] Could not store avatar for {}: {}", owner, t.getMessage());
-            return false;
+    public static boolean saveAvatarMemory(String owner, String hash, byte[] data) {
+        if (owner == null || data == null || data.length == 0) return false;
+        memoryAvatars.put(owner, data);
+        if (hash == null || hash.isEmpty() || hash.equals("avatar")) {
+            hash = getSha256(data);
         }
+        userEquipped.put(owner, hash);
+        FiguraLink.LOGGER.info("[FiguraLimit] Stored avatar in RAM for {} (size: {} bytes, hash: {})", owner, data.length, hash);
+        return true;
+    }
+
+    public static void removeAvatarMemory(String owner) {
+        if (owner == null) return;
+        memoryAvatars.remove(owner);
+        userEquipped.remove(owner);
+        FiguraLink.LOGGER.info("[FiguraLimit] Purged avatar from RAM for {}", owner);
+    }
+
+    public static void clearRemoteMemoryAvatars(String localPlayerUuid) {
+        memoryAvatars.keySet().removeIf(owner -> !owner.equalsIgnoreCase(localPlayerUuid) && !owner.equalsIgnoreCase("default"));
+        userEquipped.keySet().removeIf(owner -> !owner.equalsIgnoreCase(localPlayerUuid) && !owner.equalsIgnoreCase("default"));
+        FiguraLink.LOGGER.info("[FiguraLimit] Cleared all remote avatars from RAM.");
+    }
+
+    public static int getMemoryUserCount() {
+        return memoryAvatars.size();
+    }
+
+    public static long getMemoryTotalBytes() {
+        long total = 0;
+        for (byte[] data : memoryAvatars.values()) {
+            if (data != null) total += data.length;
+        }
+        return total;
+    }
+
+    public static boolean saveAvatarFile(String owner, String hash, byte[] data) {
+        // Save to in-memory cache directly (protecting user copyright)
+        return saveAvatarMemory(owner, hash, data);
     }
 
     public static byte[] getAvatarBytes(String owner) {
+        if (owner == null) return null;
+        // 1. Check in-memory RAM avatars first (for remote players / zero-leak session)
+        byte[] mem = memoryAvatars.get(owner);
+        if (mem != null && mem.length > 0) {
+            return mem;
+        }
+
+        // 2. Fallback to local files (for player's own local avatar)
         try {
-            if (owner == null) return null;
             Path userDir = AVATARS_DIR.resolve(owner);
             Path avatarFile = userDir.resolve("avatar");
             if (Files.exists(avatarFile)) {
@@ -379,6 +404,7 @@ public class EmbeddedFiguraServer {
                     Files.write(defaultDir.resolve(hash), data);
 
                     userEquipped.put(owner, hash);
+                    saveAvatarMemory(owner, hash, data);
                     saveEquippedState();
 
                     FiguraLink.LOGGER.info("[FiguraLimit] Successfully saved avatar for '{}' (hash: {}, size: {} bytes)", 
@@ -400,6 +426,17 @@ public class EmbeddedFiguraServer {
                 if (method.equals("GET") && parts.length == 3) {
                     String owner = parts[1];
                     String avatarId = parts[2];
+
+                    // Check in-memory avatar cache first (zero disk leak / proprietary copyright protection)
+                    byte[] memData = memoryAvatars.get(owner);
+                    if (memData != null && memData.length > 0) {
+                        exchange.getResponseHeaders().set("Content-Type", "application/octet-stream");
+                        exchange.sendResponseHeaders(200, memData.length);
+                        try (OutputStream os = exchange.getResponseBody()) {
+                            os.write(memData);
+                        }
+                        return;
+                    }
 
                     Path avatarFile = AVATARS_DIR.resolve(owner).resolve(avatarId);
                     if (!Files.exists(avatarFile)) {
@@ -432,17 +469,23 @@ public class EmbeddedFiguraServer {
                     String equippedHash = userEquipped.get(owner);
 
                     if (equippedHash == null || equippedHash.equals("avatar") || equippedHash.length() < 32) {
-                        Path userDir = AVATARS_DIR.resolve(owner);
-                        if (Files.exists(userDir)) {
-                            Path avatarFile = userDir.resolve("avatar");
-                            if (Files.exists(avatarFile)) {
-                                String hash = getSha256(avatarFile);
-                                if (hash != null) {
-                                    equippedHash = hash;
-                                    userEquipped.put(owner, equippedHash);
-                                    try {
-                                        Files.copy(avatarFile, userDir.resolve(hash), StandardCopyOption.REPLACE_EXISTING);
-                                    } catch (Throwable ignored) {}
+                        byte[] memData = memoryAvatars.get(owner);
+                        if (memData != null && memData.length > 0) {
+                            equippedHash = getSha256(memData);
+                            userEquipped.put(owner, equippedHash);
+                        } else {
+                            Path userDir = AVATARS_DIR.resolve(owner);
+                            if (Files.exists(userDir)) {
+                                Path avatarFile = userDir.resolve("avatar");
+                                if (Files.exists(avatarFile)) {
+                                    String hash = getSha256(avatarFile);
+                                    if (hash != null) {
+                                        equippedHash = hash;
+                                        userEquipped.put(owner, equippedHash);
+                                        try {
+                                            Files.copy(avatarFile, userDir.resolve(hash), StandardCopyOption.REPLACE_EXISTING);
+                                        } catch (Throwable ignored) {}
+                                    }
                                 }
                             }
                         }

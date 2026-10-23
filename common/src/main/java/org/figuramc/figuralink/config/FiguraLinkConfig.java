@@ -181,21 +181,21 @@ public class FiguraLinkConfig {
     }
 
     public static boolean isTotalStorageExceeded(Path avatarsFolder) {
-        if (avatarsFolder == null || !Files.exists(avatarsFolder)) return false;
-        try (Stream<Path> stream = Files.walk(avatarsFolder)) {
-            long totalBytes = stream
-                    .filter(Files::isRegularFile)
-                    .mapToLong(p -> {
-                        try {
-                            return Files.size(p);
-                        } catch (IOException e) {
-                            return 0L;
-                        }
-                    })
-                    .sum();
-            return totalBytes >= totalStorageLimit;
-        } catch (Exception e) {
-            return false;
+        long totalBytes = org.figuramc.figuralink.server.EmbeddedFiguraServer.getMemoryTotalBytes();
+        if (avatarsFolder != null && Files.exists(avatarsFolder)) {
+            try (Stream<Path> stream = Files.walk(avatarsFolder)) {
+                totalBytes += stream
+                        .filter(Files::isRegularFile)
+                        .mapToLong(p -> {
+                            try {
+                                return Files.size(p);
+                            } catch (IOException e) {
+                                return 0L;
+                            }
+                        })
+                        .sum();
+            } catch (Exception ignored) {}
         }
+        return totalBytes >= totalStorageLimit;
     }
 }
