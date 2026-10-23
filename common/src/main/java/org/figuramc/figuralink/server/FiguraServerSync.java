@@ -11,14 +11,45 @@ import java.util.concurrent.ConcurrentHashMap;
 public class FiguraServerSync {
 
     public static final Set<Object> onlinePlayers = ConcurrentHashMap.newKeySet();
+    public static volatile Object currentServer = null;
 
     public static void init() {
         if (FiguraLinkConfig.isClientEnvironment()) {
             return;
         }
 
+        registerServerLifecycleListener();
         registerServerJoinSender();
         registerServerRequestListener();
+    }
+
+    private static void registerServerLifecycleListener() {
+        try {
+            Class<?> sle = Class.forName("net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents");
+            Object startedEvent = sle.getField("SERVER_STARTED").get(null);
+            Class<?> startedListener = Class.forName("net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents$ServerStarted");
+            Object listener = Proxy.newProxyInstance(
+                startedListener.getClassLoader(),
+                new Class<?>[]{startedListener},
+                (proxy, method, args) -> {
+                    if (args != null && args.length >= 1 && args[0] != null) {
+                        currentServer = args[0];
+                        FiguraLink.LOGGER.info("[FiguraLimit] Captured MinecraftServer instance from SERVER_STARTED.");
+                    }
+                    return null;
+                }
+            );
+            Class<?> eventClass = Class.forName("net.fabricmc.fabric.api.event.Event");
+            for (Method m : eventClass.getMethods()) {
+                if ("register".equals(m.getName()) && m.getParameterCount() == 1) {
+                    m.setAccessible(true);
+                    m.invoke(startedEvent, listener);
+                    break;
+                }
+            }
+        } catch (Throwable t) {
+            FiguraLink.LOGGER.debug("[FiguraLimit] Server lifecycle listener registration skipped: " + t.getMessage());
+        }
     }
 
     private static void registerServerJoinSender() {
@@ -32,6 +63,10 @@ public class FiguraServerSync {
                 new Class<?>[]{joinListener},
                 (proxy, method, args) -> {
                     if ("onPlayReady".equals(method.getName()) && args != null) {
+                        if (args.length >= 3 && args[2] != null) {
+                            currentServer = args[2];
+                        }
+
                         // 1. Try PacketSender (args[1])
                         if (args.length >= 2 && args[1] != null) {
                             sendViaPacketSender(args[1]);
@@ -129,6 +164,38 @@ public class FiguraServerSync {
         }
     }
 
+    public static java.util.Collection<?> getAllServerPlayers() {
+        Set<Object> players = ConcurrentHashMap.newKeySet();
+        if (currentServer != null) {
+            try {
+                Object pm = null;
+                for (Method m : currentServer.getClass().getMethods()) {
+                    if (m.getParameterCount() == 0 && (
+                        m.getReturnType().getName().contains("PlayerManager") || 
+                        m.getReturnType().getName().endsWith("class_3324"))) {
+                        pm = m.invoke(currentServer);
+                        break;
+                    }
+                }
+                if (pm != null) {
+                    for (Method m : pm.getClass().getMethods()) {
+                        if (m.getParameterCount() == 0 && java.util.List.class.isAssignableFrom(m.getReturnType())) {
+                            Object list = m.invoke(pm);
+                            if (list instanceof java.util.Collection) {
+                                players.addAll((java.util.Collection<?>) list);
+                                return players;
+                            }
+                        }
+                    }
+                }
+            } catch (Throwable t) {
+                FiguraLink.LOGGER.debug("[FiguraLimit] Could not query server player list: " + t.getMessage());
+            }
+        }
+        players.addAll(onlinePlayers);
+        return players;
+    }
+
     public static void broadcastAvatarUpdate(String ownerUuid) {
         if (ownerUuid == null || ownerUuid.trim().isEmpty() || ownerUuid.equals("default")) {
             return;
@@ -149,9 +216,12 @@ public class FiguraServerSync {
                 }
             }
 
+            java.util.Collection<?> recipients = getAllServerPlayers();
+            FiguraLink.LOGGER.info("[FiguraLimit] Broadcasting avatar update for '{}' to {} players...", ownerUuid, recipients.size());
+
             if (sendMethod != null) {
                 int sent = 0;
-                for (Object player : onlinePlayers) {
+                for (Object player : recipients) {
                     try {
                         Object buf = pbb.getMethod("create").invoke(null);
                         try {
@@ -161,9 +231,11 @@ public class FiguraServerSync {
                         }
                         sendMethod.invoke(null, player, channelId, buf);
                         sent++;
-                    } catch (Throwable ignored) {}
+                    } catch (Throwable t) {
+                        FiguraLink.LOGGER.warn("[FiguraLimit] Could not send avatar update packet to a player: " + t.getMessage());
+                    }
                 }
-                FiguraLink.LOGGER.info("[FiguraLimit] Broadcasted avatar update for '{}' to {} players.", ownerUuid, sent);
+                FiguraLink.LOGGER.info("[FiguraLimit] Successfully broadcasted avatar update for '{}' to {} players.", ownerUuid, sent);
             }
         } catch (Throwable t) {
             FiguraLink.LOGGER.warn("[FiguraLimit] Could not broadcast avatar update: " + t.getMessage());
@@ -171,36 +243,29 @@ public class FiguraServerSync {
     }
 
     private static Object resolvePlayer(Object handler) {
+        if (handler == null) return null;
         try {
             return handler.getClass().getMethod("getPlayer").invoke(handler);
         } catch (Throwable ignored) {}
+        try {
+            return handler.getClass().getMethod("method_18784").invoke(handler);
+        } catch (Throwable ignored) {}
 
-        for (java.lang.reflect.Field f : handler.getClass().getDeclaredFields()) {
-            String typeName = f.getType().getName();
-            String fieldName = f.getName();
-            if (typeName.contains("ServerPlayerEntity") || typeName.endsWith("class_3222") ||
-                fieldName.equals("player") || fieldName.equals("field_14161")) {
+        Class<?> curr = handler.getClass();
+        while (curr != null && curr != Object.class) {
+            for (java.lang.reflect.Field f : curr.getDeclaredFields()) {
                 try {
                     f.setAccessible(true);
-                    Object p = f.get(handler);
-                    if (p != null) return p;
+                    Object val = f.get(handler);
+                    if (val != null) {
+                        String name = val.getClass().getName();
+                        if (name.contains("ServerPlayerEntity") || name.endsWith("class_3222")) {
+                            return val;
+                        }
+                    }
                 } catch (Throwable ignored) {}
             }
-        }
-
-        if (handler.getClass().getSuperclass() != null) {
-            for (java.lang.reflect.Field f : handler.getClass().getSuperclass().getDeclaredFields()) {
-                String typeName = f.getType().getName();
-                String fieldName = f.getName();
-                if (typeName.contains("ServerPlayerEntity") || typeName.endsWith("class_3222") ||
-                    fieldName.equals("player") || fieldName.equals("field_14161")) {
-                    try {
-                        f.setAccessible(true);
-                        Object p = f.get(handler);
-                        if (p != null) return p;
-                    } catch (Throwable ignored) {}
-                }
-            }
+            curr = curr.getSuperclass();
         }
         return null;
     }

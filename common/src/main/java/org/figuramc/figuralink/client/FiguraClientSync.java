@@ -94,8 +94,19 @@ public class FiguraClientSync {
                 handlerClass.getClassLoader(),
                 new Class<?>[]{handlerClass},
                 (proxy, method, args) -> {
-                    if ("receive".equals(method.getName()) && args != null && args.length >= 3) {
-                        Object buf = args[2];
+                    if ("receive".equals(method.getName()) && args != null) {
+                        Object buf = null;
+                        for (Object arg : args) {
+                            if (arg != null && arg.getClass().getName().contains("Buf")) {
+                                buf = arg;
+                                break;
+                            }
+                        }
+                        if (buf == null && args.length >= 3) {
+                            buf = args[2];
+                        }
+                        if (buf == null) return null;
+
                         String ownerUuidStr = null;
                         try {
                             ownerUuidStr = (String) buf.getClass().getMethod("readString").invoke(buf);
@@ -105,41 +116,66 @@ public class FiguraClientSync {
                             } catch (Throwable ignored) {}
                         }
 
-                            final String finalUuid = ownerUuidStr;
-                            FiguraLink.LOGGER.info("[FiguraLimit] Received avatar update packet for: {}", finalUuid);
-                            try {
-                                Class<?> mcClass = null;
-                                try { mcClass = Class.forName("net.minecraft.client.MinecraftClient"); }
-                                catch (Throwable e) { mcClass = Class.forName("net.minecraft.class_310"); }
-                                Object mc = mcClass.getMethod("getInstance").invoke(null);
-                                if (mc != null) {
-                                    Method exec = mc.getClass().getMethod("execute", Runnable.class);
-                                    exec.invoke(mc, (Runnable) () -> {
+                        if (ownerUuidStr == null || ownerUuidStr.trim().isEmpty()) return null;
+                        final String finalUuid = ownerUuidStr.trim();
+                        FiguraLink.LOGGER.info("[FiguraLimit] Received avatar update packet for: {}", finalUuid);
+                        final UUID targetUUID = parseUUID(finalUuid);
+                        if (targetUUID == null) {
+                            FiguraLink.LOGGER.warn("[FiguraLimit] Could not parse UUID from update packet: {}", finalUuid);
+                            return null;
+                        }
+
+                        try {
+                            Class<?> mcClass = null;
+                            try { mcClass = Class.forName("net.minecraft.client.MinecraftClient"); }
+                            catch (Throwable e) { mcClass = Class.forName("net.minecraft.class_310"); }
+                            Object mc = mcClass.getMethod("getInstance").invoke(null);
+                            if (mc != null) {
+                                Method exec = mc.getClass().getMethod("execute", Runnable.class);
+                                exec.invoke(mc, (Runnable) () -> {
+                                    try {
+                                        Class<?> am = Class.forName("org.figuramc.figura.avatar.AvatarManager");
+                                        
                                         try {
-                                            UUID targetUUID = UUID.fromString(finalUuid);
-                                            Class<?> am = Class.forName("org.figuramc.figura.avatar.AvatarManager");
-                                            try {
-                                                Method clear = am.getMethod("clearAvatars", UUID.class);
-                                                clear.invoke(null, targetUUID);
-                                            } catch (Throwable ignored) {}
+                                            Method clear = am.getMethod("clearAvatars", UUID.class);
+                                            clear.invoke(null, targetUUID);
+                                        } catch (Throwable ignored) {}
+
+                                        try {
+                                            Class<?> fm = Class.forName("org.figuramc.figura.FiguraMod");
+                                            Object localUuid = fm.getMethod("getLocalPlayerUUID").invoke(null);
+                                            if (targetUUID.equals(localUuid)) {
+                                                Field lu = am.getDeclaredField("localUploaded");
+                                                lu.setAccessible(true);
+                                                lu.setBoolean(null, true);
+                                            }
+                                        } catch (Throwable ignored) {}
+
+                                        try {
+                                            Method fetchBackend = am.getDeclaredMethod("fetchBackend", UUID.class);
+                                            fetchBackend.setAccessible(true);
+                                            fetchBackend.invoke(null, targetUUID);
+                                            FiguraLink.LOGGER.info("[FiguraLimit] Successfully triggered fetchBackend for: {}", targetUUID);
+                                        } catch (Throwable t) {
                                             try {
                                                 Method reload = am.getMethod("reloadAvatar", UUID.class);
                                                 reload.invoke(null, targetUUID);
                                             } catch (Throwable ignored) {}
-                                            FiguraLink.LOGGER.info("[FiguraLimit] Reloaded avatar cache for: {}", targetUUID);
-                                        } catch (Throwable ignored) {}
-                                    });
-                                }
-                            } catch (Throwable t) {
-                                try {
-                                    UUID targetUUID = UUID.fromString(finalUuid);
-                                    Class<?> am = Class.forName("org.figuramc.figura.avatar.AvatarManager");
-                                    try {
-                                        Method clear = am.getMethod("clearAvatars", UUID.class);
-                                        clear.invoke(null, targetUUID);
+                                        }
+
+                                        FiguraLink.LOGGER.info("[FiguraLimit] Reloaded avatar cache for: {}", targetUUID);
                                     } catch (Throwable ignored) {}
-                                } catch (Throwable ignored) {}
+                                });
                             }
+                        } catch (Throwable t) {
+                            try {
+                                Class<?> am = Class.forName("org.figuramc.figura.avatar.AvatarManager");
+                                try {
+                                    Method clear = am.getMethod("clearAvatars", UUID.class);
+                                    clear.invoke(null, targetUUID);
+                                } catch (Throwable ignored) {}
+                            } catch (Throwable ignored) {}
+                        }
                     }
                     return null;
                 }
@@ -150,6 +186,21 @@ public class FiguraClientSync {
             FiguraLink.LOGGER.info("[FiguraLimit] Registered ClientPlayNetworking receiver for 'figuralink:avatar_update'");
         } catch (Throwable t) {
             FiguraLink.LOGGER.debug("[FiguraLimit] Avatar update receiver skipped: " + t.getMessage());
+        }
+    }
+
+    public static UUID parseUUID(String s) {
+        if (s == null) return null;
+        s = s.trim();
+        try {
+            if (s.contains("-")) {
+                return UUID.fromString(s);
+            } else if (s.length() == 32) {
+                return UUID.fromString(s.replaceFirst("(\\w{8})(\\w{4})(\\w{4})(\\w{4})(\\w{12})", "$1-$2-$3-$4-$5"));
+            }
+            return UUID.fromString(s);
+        } catch (Throwable t) {
+            return null;
         }
     }
 

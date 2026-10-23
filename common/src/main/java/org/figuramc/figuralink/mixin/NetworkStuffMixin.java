@@ -9,6 +9,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 
 @Mixin(targets = "org.figuramc.figura.backend2.NetworkStuff", remap = false)
 public class NetworkStuffMixin {
@@ -39,6 +40,13 @@ public class NetworkStuffMixin {
     private static void onCheckWS(CallbackInfoReturnable<Boolean> cir) {
         if (FiguraLinkUtil.isCustomBackend()) {
             cir.setReturnValue(true);
+        }
+    }
+
+    @Inject(method = "checkUUID", at = @At("HEAD"), cancellable = true)
+    private static void onCheckUUID(java.util.UUID uuid, CallbackInfoReturnable<Boolean> cir) {
+        if (FiguraLinkUtil.isCustomBackend()) {
+            cir.setReturnValue(false);
         }
     }
 
@@ -97,6 +105,36 @@ public class NetworkStuffMixin {
                 statusField.setInt(null, 3);
             } catch (Throwable ignored) {}
             ci.cancel();
+        }
+    }
+
+    @Inject(method = "equipAvatar", at = @At("RETURN"))
+    private static void onEquipAvatar(CallbackInfo ci) {
+        if (FiguraLinkUtil.isCustomBackend()) {
+            try {
+                Class<?> fm = Class.forName("org.figuramc.figura.FiguraMod");
+                Object localUuid = fm.getMethod("getLocalPlayerUUID").invoke(null);
+                if (localUuid instanceof java.util.UUID) {
+                    java.util.UUID u = (java.util.UUID) localUuid;
+                    Class<?> am = Class.forName("org.figuramc.figura.avatar.AvatarManager");
+                    try {
+                        Method clear = am.getMethod("clearAvatars", java.util.UUID.class);
+                        clear.invoke(null, u);
+                    } catch (Throwable ignored) {}
+
+                    try {
+                        Field lu = am.getDeclaredField("localUploaded");
+                        lu.setAccessible(true);
+                        lu.setBoolean(null, true);
+                    } catch (Throwable ignored) {}
+
+                    try {
+                        Method fetchBackend = am.getDeclaredMethod("fetchBackend", java.util.UUID.class);
+                        fetchBackend.setAccessible(true);
+                        fetchBackend.invoke(null, u);
+                    } catch (Throwable ignored) {}
+                }
+            } catch (Throwable ignored) {}
         }
     }
 }

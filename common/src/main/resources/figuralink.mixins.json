@@ -10,7 +10,8 @@
     "HttpAPIMixin",
     "FiguraWebSocketAdapterMixin",
     "AuthHandlerMixin",
-    "WardrobeScreenMixin"
+    "WardrobeScreenMixin",
+    "EntityUtilsMixin"
   ],
   "injectors": {
     "defaultRequire": 1
