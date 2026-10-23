@@ -128,6 +128,69 @@ public class EmbeddedFiguraServer {
         }
     }
 
+    public static void setUserEquipped(String owner, String hash) {
+        if (owner != null && hash != null) {
+            userEquipped.put(owner, hash);
+            saveEquippedState();
+        }
+    }
+
+    public static String getUserEquipped(String owner) {
+        return userEquipped.get(owner);
+    }
+
+    public static Map<String, String> getUserEquippedMap() {
+        return java.util.Collections.unmodifiableMap(userEquipped);
+    }
+
+    public static Path getAvatarsDir() {
+        return AVATARS_DIR;
+    }
+
+    public static boolean saveAvatarFile(String owner, String hash, byte[] data) {
+        try {
+            if (owner == null || data == null || data.length == 0) return false;
+            Path userDir = AVATARS_DIR.resolve(owner);
+            Files.createDirectories(userDir);
+            Files.write(userDir.resolve("avatar"), data);
+            if (hash != null && !hash.isEmpty() && !hash.equals("avatar")) {
+                Files.write(userDir.resolve(hash), data);
+                userEquipped.put(owner, hash);
+            } else {
+                String computed = getSha256(data);
+                Files.write(userDir.resolve(computed), data);
+                userEquipped.put(owner, computed);
+            }
+            saveEquippedState();
+            FiguraLink.LOGGER.info("[FiguraLimit] Stored avatar for {} (size: {} bytes, hash: {})", 
+                    owner, data.length, userEquipped.get(owner));
+            return true;
+        } catch (Throwable t) {
+            FiguraLink.LOGGER.warn("[FiguraLimit] Could not store avatar for {}: {}", owner, t.getMessage());
+            return false;
+        }
+    }
+
+    public static byte[] getAvatarBytes(String owner) {
+        try {
+            if (owner == null) return null;
+            Path userDir = AVATARS_DIR.resolve(owner);
+            Path avatarFile = userDir.resolve("avatar");
+            if (Files.exists(avatarFile)) {
+                return Files.readAllBytes(avatarFile);
+            }
+            String hash = userEquipped.get(owner);
+            if (hash != null && Files.exists(userDir.resolve(hash))) {
+                return Files.readAllBytes(userDir.resolve(hash));
+            }
+            Path defaultFile = AVATARS_DIR.resolve("default").resolve("avatar");
+            if (Files.exists(defaultFile)) {
+                return Files.readAllBytes(defaultFile);
+            }
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
     private static class RootHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
@@ -256,7 +319,11 @@ public class EmbeddedFiguraServer {
                         }
 
                         saveEquippedState();
-                        FiguraServerSync.broadcastAvatarUpdate(owner);
+                        if (FiguraLinkConfig.isClientEnvironment()) {
+                            org.figuramc.figuralink.client.FiguraClientSync.onLocalAvatarEquipped(owner);
+                        } else {
+                            FiguraServerSync.broadcastAvatarUpdate(owner);
+                        }
                     }
                     sendText(exchange, 200, "OK");
                     return;
@@ -318,7 +385,11 @@ public class EmbeddedFiguraServer {
                             owner, hash, data.length);
 
                     if (!owner.equals("default")) {
-                        FiguraServerSync.broadcastAvatarUpdate(owner);
+                        if (FiguraLinkConfig.isClientEnvironment()) {
+                            org.figuramc.figuralink.client.FiguraClientSync.onLocalAvatarSaved(owner, data, hash);
+                        } else {
+                            FiguraServerSync.broadcastAvatarData(owner, hash, data);
+                        }
                     }
 
                     sendText(exchange, 200, "OK");

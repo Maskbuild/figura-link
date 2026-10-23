@@ -2,10 +2,14 @@ package org.figuramc.figuralink.server;
 
 import org.figuramc.figuralink.FiguraLink;
 import org.figuramc.figuralink.config.FiguraLinkConfig;
+import org.figuramc.figuralink.util.AvatarTransferTracker;
+import org.figuramc.figuralink.util.FiguraPacketUtil;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.util.Collection;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -13,6 +17,7 @@ public class FiguraServerSync {
 
     public static final Set<Object> onlinePlayers = ConcurrentHashMap.newKeySet();
     public static volatile Object currentServer = null;
+    private static final AvatarTransferTracker serverTracker = new AvatarTransferTracker();
 
     public static void init() {
         if (FiguraLinkConfig.isClientEnvironment()) {
@@ -21,7 +26,7 @@ public class FiguraServerSync {
 
         registerServerLifecycleListener();
         registerServerJoinSender();
-        registerServerRequestListener();
+        registerServerReceivers();
     }
 
     private static void registerServerLifecycleListener() {
@@ -77,7 +82,7 @@ public class FiguraServerSync {
 
                         // Schedule sync across multiple delays to guarantee client receipt
                         new Thread(() -> {
-                            int[] delays = new int[]{0, 200, 600, 1200, 2500, 5000};
+                            int[] delays = new int[]{0, 200, 600, 1500};
                             for (int delay : delays) {
                                 if (delay > 0) {
                                     try { Thread.sleep(delay); } catch (InterruptedException ignored) {}
@@ -88,6 +93,9 @@ public class FiguraServerSync {
                                 if (player != null) {
                                     sendBackendAddressToPlayer(player);
                                 }
+                            }
+                            if (player != null) {
+                                syncAllAvatarsToPlayer(player);
                             }
                         }, "FiguraLimit-JoinSyncSchedule").start();
                     }
@@ -136,82 +144,204 @@ public class FiguraServerSync {
         }
     }
 
-    private static void registerServerRequestListener() {
+    private interface ServerPacketReceiver {
+        void onPacket(Object player, Object buf, Object sender);
+    }
+
+    private static void registerServerReceivers() {
         try {
             Class<?> spn = Class.forName("net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking");
             Class<?> idClass = null;
             try { idClass = Class.forName("net.minecraft.util.Identifier"); }
             catch (Throwable e) { idClass = Class.forName("net.minecraft.class_2960"); }
 
-            Object channelId = idClass.getConstructor(String.class, String.class).newInstance("figuralink", "request_backend");
-
             Class<?> handlerClass = Class.forName("net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking$PlayChannelHandler");
+            Method regMethod = spn.getMethod("registerGlobalReceiver", idClass, handlerClass);
+
+            // 1. request_backend
+            registerOneReceiver(spn, idClass, handlerClass, regMethod, "request_backend", (player, buf, sender) -> {
+                if (sender != null) {
+                    sendViaPacketSender(sender);
+                }
+                if (player != null) {
+                    onlinePlayers.add(player);
+                    sendBackendAddressToPlayer(player);
+                }
+            });
+
+            // 2. toggle_drive (/figura drive BossBar)
+            registerOneReceiver(spn, idClass, handlerClass, regMethod, "toggle_drive", (player, buf, sender) -> {
+                if (player == null) return;
+                Runnable task = () -> {
+                    if (isPlayerOp(player)) {
+                        FiguraDriveBossBar.togglePlayer(player, null);
+                    } else {
+                        FiguraDriveBossBar.sendPlayerMessage(player, "§cYou do not have permission to use this command.");
+                    }
+                };
+                if (currentServer != null) {
+                    try {
+                        Method exec = currentServer.getClass().getMethod("execute", Runnable.class);
+                        exec.invoke(currentServer, task);
+                        return;
+                    } catch (Throwable ignored) {}
+                }
+                task.run();
+            });
+
+            // 3. handshake (C2S on join: [ownerUuid] [equippedHash])
+            registerOneReceiver(spn, idClass, handlerClass, regMethod, "handshake", (player, buf, sender) -> {
+                String clientUuid = FiguraPacketUtil.readString(buf);
+                String clientHash = FiguraPacketUtil.readString(buf);
+                if (clientUuid != null && !clientUuid.trim().isEmpty() && clientHash != null && !clientHash.trim().isEmpty()) {
+                    clientUuid = clientUuid.trim();
+                    clientHash = clientHash.trim();
+                    byte[] existing = EmbeddedFiguraServer.getAvatarBytes(clientUuid);
+                    String serverHash = EmbeddedFiguraServer.getUserEquipped(clientUuid);
+
+                    if (existing == null || serverHash == null || !serverHash.equalsIgnoreCase(clientHash)) {
+                        FiguraLink.LOGGER.info("[FiguraLimit] Server requesting missing avatar for {} (client hash: {})", clientUuid, clientHash);
+                        Object reqBuf = FiguraPacketUtil.createBuf();
+                        FiguraPacketUtil.writeString(reqBuf, clientUuid);
+                        FiguraPacketUtil.sendS2C(player, "request_avatar", reqBuf);
+                    } else {
+                        FiguraLink.LOGGER.info("[FiguraLimit] Server already has current avatar for {}", clientUuid);
+                        broadcastAvatarData(clientUuid, clientHash, existing, player);
+                    }
+                }
+            });
+
+            // 4. avatar_chunk (C2S upload chunk)
+            registerOneReceiver(spn, idClass, handlerClass, regMethod, "avatar_chunk", (player, buf, sender) -> {
+                String ownerUuid = FiguraPacketUtil.readString(buf);
+                String hash = FiguraPacketUtil.readString(buf);
+                int chunkIndex = FiguraPacketUtil.readInt(buf);
+                int totalChunks = FiguraPacketUtil.readInt(buf);
+                byte[] chunkData = FiguraPacketUtil.readByteArray(buf);
+
+                byte[] fullAvatar = serverTracker.handleIncomingChunk(ownerUuid, hash, chunkIndex, totalChunks, chunkData);
+                if (fullAvatar != null) {
+                    if (fullAvatar.length > FiguraLinkConfig.getMaxAvatarSize()) {
+                        FiguraLink.LOGGER.warn("[FiguraLimit] Avatar from {} exceeds size limit ({} bytes)", ownerUuid, fullAvatar.length);
+                        return;
+                    }
+                    if (FiguraLinkConfig.isTotalStorageExceeded(EmbeddedFiguraServer.getAvatarsDir())) {
+                        FiguraLink.LOGGER.warn("[FiguraLimit] Server storage limit exceeded, rejecting avatar for {}", ownerUuid);
+                        return;
+                    }
+
+                    EmbeddedFiguraServer.saveAvatarFile(ownerUuid, hash, fullAvatar);
+                    FiguraDriveBossBar.updateBossBar();
+
+                    // Broadcast to other players
+                    broadcastAvatarData(ownerUuid, hash, fullAvatar, player);
+                }
+            });
+
+            // 5. request_avatar (C2S client pulls missing avatar)
+            registerOneReceiver(spn, idClass, handlerClass, regMethod, "request_avatar", (player, buf, sender) -> {
+                String requestedUuid = FiguraPacketUtil.readString(buf);
+                if (requestedUuid != null && !requestedUuid.trim().isEmpty()) {
+                    requestedUuid = requestedUuid.trim();
+                    byte[] data = EmbeddedFiguraServer.getAvatarBytes(requestedUuid);
+                    if (data != null) {
+                        String hash = EmbeddedFiguraServer.getUserEquipped(requestedUuid);
+                        sendAvatarToPlayer(player, requestedUuid, hash, data);
+                    }
+                }
+            });
+
+        } catch (Throwable t) {
+            FiguraLink.LOGGER.debug("[FiguraLimit] Server receiver registration skipped: " + t.getMessage());
+        }
+    }
+
+    private static void registerOneReceiver(Class<?> spn, Class<?> idClass, Class<?> handlerClass, Method regMethod, String channelName, ServerPacketReceiver receiver) {
+        try {
+            Object channelId = idClass.getConstructor(String.class, String.class).newInstance("figuralink", channelName);
             Object handler = Proxy.newProxyInstance(
                 handlerClass.getClassLoader(),
                 new Class<?>[]{handlerClass},
                 (proxy, method, args) -> {
                     if ("receive".equals(method.getName()) && args != null) {
-                        // args: (server, player, handler, buf, responseSender)
                         Object player = (args.length >= 2) ? args[1] : null;
+                        Object buf = null;
                         Object sender = null;
                         for (Object arg : args) {
-                            if (arg != null && arg.getClass().getName().contains("PacketSender")) {
-                                sender = arg;
-                                break;
+                            if (arg != null) {
+                                String cName = arg.getClass().getName();
+                                if (cName.contains("Buf") || cName.endsWith("class_2540")) {
+                                    buf = arg;
+                                } else if (cName.contains("PacketSender")) {
+                                    sender = arg;
+                                }
                             }
                         }
-
-                        if (sender != null) {
-                            sendViaPacketSender(sender);
+                        if (buf == null && args.length >= 4) {
+                            buf = args[3];
                         }
-                        if (player != null) {
-                            onlinePlayers.add(player);
-                            sendBackendAddressToPlayer(player);
+                        if (receiver != null && buf != null) {
+                            receiver.onPacket(player, buf, sender);
                         }
                     }
                     return null;
                 }
             );
-
-            Method regMethod = spn.getMethod("registerGlobalReceiver", idClass, handlerClass);
             regMethod.invoke(null, channelId, handler);
-            FiguraLink.LOGGER.info("[FiguraLimit] Registered ServerPlayNetworking receiver for 'figuralink:request_backend'");
-
-            // Receiver for /figura drive bossbar toggle packet
-            Object toggleChannelId = idClass.getConstructor(String.class, String.class).newInstance("figuralink", "toggle_drive");
-            Object toggleHandler = Proxy.newProxyInstance(
-                handlerClass.getClassLoader(),
-                new Class<?>[]{handlerClass},
-                (proxy, method, args) -> {
-                    if ("receive".equals(method.getName()) && args != null && args.length >= 2) {
-                        final Object player = args[1];
-                        Runnable task = () -> {
-                            if (isPlayerOp(player)) {
-                                FiguraDriveBossBar.togglePlayer(player, null);
-                            } else {
-                                FiguraDriveBossBar.sendPlayerMessage(player, "§cYou do not have permission to use this command.");
-                            }
-                        };
-                        if (currentServer != null) {
-                            try {
-                                Method exec = currentServer.getClass().getMethod("execute", Runnable.class);
-                                exec.invoke(currentServer, task);
-                                return null;
-                            } catch (Throwable ignored) {}
-                        }
-                        task.run();
-                    }
-                    return null;
-                }
-            );
-            regMethod.invoke(null, toggleChannelId, toggleHandler);
-            FiguraLink.LOGGER.info("[FiguraLimit] Registered ServerPlayNetworking receiver for 'figuralink:toggle_drive'");
+            FiguraLink.LOGGER.info("[FiguraLimit] Registered Server receiver for 'figuralink:{}'", channelName);
         } catch (Throwable t) {
-            FiguraLink.LOGGER.debug("[FiguraLimit] Request listener registration skipped: " + t.getMessage());
+            FiguraLink.LOGGER.debug("[FiguraLimit] Failed to register receiver for '{}': {}", channelName, t.getMessage());
         }
     }
 
-    public static java.util.Collection<Object> getAllServerPlayers() {
+    public static void broadcastAvatarData(String ownerUuid, String hash, byte[] data) {
+        broadcastAvatarData(ownerUuid, hash, data, null);
+    }
+
+    public static void broadcastAvatarData(String ownerUuid, String hash, byte[] data, Object excludePlayer) {
+        if (ownerUuid == null || data == null || data.length == 0) return;
+        new Thread(() -> {
+            Collection<Object> recipients = getAllServerPlayers();
+            FiguraLink.LOGGER.info("[FiguraLimit] Broadcasting avatar data for {} to {} players...", ownerUuid, recipients.size());
+            for (Object player : recipients) {
+                if (excludePlayer != null && player.equals(excludePlayer)) continue;
+                sendAvatarToPlayer(player, ownerUuid, hash, data);
+            }
+            broadcastAvatarUpdate(ownerUuid);
+        }, "FiguraLimit-ServerBroadcast").start();
+    }
+
+    public static void sendAvatarToPlayer(Object player, String ownerUuid, String hash, byte[] data) {
+        if (player == null || ownerUuid == null || data == null) return;
+        AvatarTransferTracker.streamChunks(ownerUuid, hash, data, (uuid, h, chunkIdx, totalChunks, chunk) -> {
+            Object buf = FiguraPacketUtil.createBuf();
+            FiguraPacketUtil.writeString(buf, uuid);
+            FiguraPacketUtil.writeString(buf, h);
+            FiguraPacketUtil.writeInt(buf, chunkIdx);
+            FiguraPacketUtil.writeInt(buf, totalChunks);
+            FiguraPacketUtil.writeByteArray(buf, chunk);
+            FiguraPacketUtil.sendS2C(player, "avatar_chunk", buf);
+        });
+    }
+
+    public static void syncAllAvatarsToPlayer(Object player) {
+        if (player == null) return;
+        new Thread(() -> {
+            try { Thread.sleep(1000); } catch (InterruptedException ignored) {}
+            Map<String, String> equipped = EmbeddedFiguraServer.getUserEquippedMap();
+            FiguraLink.LOGGER.info("[FiguraLimit] Syncing {} server avatars to new player...", equipped.size());
+            for (Map.Entry<String, String> entry : equipped.entrySet()) {
+                String owner = entry.getKey();
+                String hash = entry.getValue();
+                byte[] data = EmbeddedFiguraServer.getAvatarBytes(owner);
+                if (data != null && data.length > 0) {
+                    sendAvatarToPlayer(player, owner, hash, data);
+                }
+            }
+        }, "FiguraLimit-PlayerInitialSync").start();
+    }
+
+    public static Collection<Object> getAllServerPlayers() {
         Set<Object> players = ConcurrentHashMap.newKeySet();
         if (currentServer != null) {
             try {
@@ -234,8 +364,8 @@ public class FiguraServerSync {
                     }
                     if (getPlayerListMethod != null) {
                         Object list = getPlayerListMethod.invoke(pm);
-                        if (list instanceof java.util.Collection) {
-                            for (Object item : (java.util.Collection<?>) list) {
+                        if (list instanceof Collection) {
+                            for (Object item : (Collection<?>) list) {
                                 if (isServerPlayer(item)) {
                                     players.add(item);
                                 }
@@ -243,12 +373,12 @@ public class FiguraServerSync {
                         }
                     }
                     if (players.isEmpty()) {
-                        for (java.lang.reflect.Field f : pm.getClass().getDeclaredFields()) {
+                        for (Field f : pm.getClass().getDeclaredFields()) {
                             try {
                                 f.setAccessible(true);
                                 Object val = f.get(pm);
-                                if (val instanceof java.util.Collection) {
-                                    for (Object item : (java.util.Collection<?>) val) {
+                                if (val instanceof Collection) {
+                                    for (Object item : (Collection<?>) val) {
                                         if (isServerPlayer(item)) {
                                             players.add(item);
                                         }
@@ -327,41 +457,17 @@ public class FiguraServerSync {
         FiguraDriveBossBar.updateBossBar();
         Runnable broadcastTask = () -> {
             try {
-                Class<?> idClass = null;
-                try { idClass = Class.forName("net.minecraft.util.Identifier"); }
-                catch (Throwable e) { idClass = Class.forName("net.minecraft.class_2960"); }
-                Object channelId = idClass.getConstructor(String.class, String.class).newInstance("figuralink", "avatar_update");
+                Collection<Object> recipients = getAllServerPlayers();
+                FiguraLink.LOGGER.info("[FiguraLimit] Broadcasting avatar_update packet for '{}' to {} players...", ownerUuid, recipients.size());
 
-                Class<?> pbb = Class.forName("net.fabricmc.fabric.api.networking.v1.PacketByteBufs");
-                Class<?> spn = Class.forName("net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking");
-                Method sendMethod = null;
-                for (Method m : spn.getMethods()) {
-                    if ("send".equals(m.getName()) && m.getParameterCount() == 3) {
-                        sendMethod = m;
-                        break;
+                for (Object player : recipients) {
+                    try {
+                        Object buf = FiguraPacketUtil.createBuf();
+                        FiguraPacketUtil.writeString(buf, ownerUuid.trim());
+                        FiguraPacketUtil.sendS2C(player, "avatar_update", buf);
+                    } catch (Throwable t) {
+                        FiguraLink.LOGGER.warn("[FiguraLimit] Could not send avatar update packet: " + t.getMessage());
                     }
-                }
-
-                java.util.Collection<Object> recipients = getAllServerPlayers();
-                FiguraLink.LOGGER.info("[FiguraLimit] Broadcasting avatar update for '{}' to {} players...", ownerUuid, recipients.size());
-
-                if (sendMethod != null) {
-                    int sent = 0;
-                    for (Object player : recipients) {
-                        try {
-                            Object buf = pbb.getMethod("create").invoke(null);
-                            try {
-                                buf.getClass().getMethod("writeString", String.class).invoke(buf, ownerUuid.trim());
-                            } catch (Throwable t) {
-                                buf.getClass().getMethod("method_10814", String.class).invoke(buf, ownerUuid.trim());
-                            }
-                            sendMethod.invoke(null, player, channelId, buf);
-                            sent++;
-                        } catch (Throwable t) {
-                            FiguraLink.LOGGER.warn("[FiguraLimit] Could not send avatar update packet to a player: " + t.getMessage());
-                        }
-                    }
-                    FiguraLink.LOGGER.info("[FiguraLimit] Successfully broadcasted avatar update for '{}' to {} players.", ownerUuid, sent);
                 }
             } catch (Throwable t) {
                 FiguraLink.LOGGER.warn("[FiguraLimit] Could not broadcast avatar update: " + t.getMessage());
@@ -401,7 +507,7 @@ public class FiguraServerSync {
 
         Class<?> curr = handler.getClass();
         while (curr != null && curr != Object.class) {
-            for (java.lang.reflect.Field f : curr.getDeclaredFields()) {
+            for (Field f : curr.getDeclaredFields()) {
                 try {
                     f.setAccessible(true);
                     Object val = f.get(handler);
@@ -423,7 +529,8 @@ public class FiguraServerSync {
         } else if (port > 0) {
             return "AUTO:" + port;
         } else {
-            return null;
+            // Universal zero-port single link!
+            return "127.0.0.1:30007";
         }
     }
 
@@ -431,22 +538,9 @@ public class FiguraServerSync {
         if (sender == null) return;
         try {
             String address = getEffectiveBackendAddress();
-            if (address == null) {
-                FiguraLink.LOGGER.debug("[FiguraLimit] Backend port is not configured yet (0). Skipping packet sync.");
-                return;
-            }
-            Class<?> idClass = null;
-            try { idClass = Class.forName("net.minecraft.util.Identifier"); }
-            catch (Throwable e) { idClass = Class.forName("net.minecraft.class_2960"); }
-            Object channelId = idClass.getConstructor(String.class, String.class).newInstance("figuralink", "sync_backend");
-
-            Class<?> pbb = Class.forName("net.fabricmc.fabric.api.networking.v1.PacketByteBufs");
-            Object buf = pbb.getMethod("create").invoke(null);
-            try {
-                buf.getClass().getMethod("writeString", String.class).invoke(buf, address);
-            } catch (Throwable t) {
-                buf.getClass().getMethod("method_10814", String.class).invoke(buf, address);
-            }
+            Object channelId = FiguraPacketUtil.createIdentifier("figuralink", "sync_backend");
+            Object buf = FiguraPacketUtil.createBuf();
+            FiguraPacketUtil.writeString(buf, address);
 
             // 1. Try createPacket + sendPacket(packet)
             for (Method m : sender.getClass().getMethods()) {
@@ -457,7 +551,7 @@ public class FiguraServerSync {
                             for (Method sm : sender.getClass().getMethods()) {
                                 if ("sendPacket".equals(sm.getName()) && sm.getParameterCount() == 1) {
                                     sm.invoke(sender, packet);
-                                    FiguraLink.LOGGER.info("[FiguraLimit] Sent backend address '{}' via PacketSender.createPacket+sendPacket.", address);
+                                    FiguraLink.LOGGER.info("[FiguraLimit] Sent backend address '{}' via PacketSender.", address);
                                     return;
                                 }
                             }
@@ -466,7 +560,7 @@ public class FiguraServerSync {
                 }
             }
 
-            // 2. Try sendPacket(channelId, buf) matching parameter types
+            // 2. Try sendPacket(channelId, buf)
             for (Method m : sender.getClass().getMethods()) {
                 if ("sendPacket".equals(m.getName()) && m.getParameterCount() == 2) {
                     Class<?>[] pt = m.getParameterTypes();
@@ -485,81 +579,9 @@ public class FiguraServerSync {
     public static void sendBackendAddressToPlayer(Object serverPlayer) {
         if (serverPlayer == null) return;
         String address = getEffectiveBackendAddress();
-        if (address == null) {
-            return;
-        }
-
-        try {
-            Class<?> spn = Class.forName("net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking");
-            Class<?> idClass = null;
-            try { idClass = Class.forName("net.minecraft.util.Identifier"); }
-            catch (Throwable e) { idClass = Class.forName("net.minecraft.class_2960"); }
-
-            Object channelId = idClass.getConstructor(String.class, String.class).newInstance("figuralink", "sync_backend");
-
-            Class<?> pbb = Class.forName("net.fabricmc.fabric.api.networking.v1.PacketByteBufs");
-            Object buf = pbb.getMethod("create").invoke(null);
-            try {
-                buf.getClass().getMethod("writeString", String.class).invoke(buf, address);
-            } catch (Throwable t) {
-                buf.getClass().getMethod("method_10814", String.class).invoke(buf, address);
-            }
-
-            // 1. Try createS2CPacket and direct send via player's networkHandler
-            try {
-                Method createS2C = null;
-                for (Method m : spn.getMethods()) {
-                    if ("createS2CPacket".equals(m.getName()) && m.getParameterCount() == 2) {
-                        createS2C = m;
-                        break;
-                    }
-                }
-                if (createS2C != null) {
-                    Object packet = createS2C.invoke(null, channelId, buf);
-                    if (packet != null) {
-                        Object nh = null;
-                        for (String fName : new String[]{"networkHandler", "field_13987"}) {
-                            try {
-                                Field f = serverPlayer.getClass().getField(fName);
-                                nh = f.get(serverPlayer);
-                                if (nh != null) break;
-                            } catch (Throwable ignored) {}
-                        }
-                        if (nh != null) {
-                            for (String mName : new String[]{"sendPacket", "method_14364"}) {
-                                try {
-                                    Method m = nh.getClass().getMethod(mName, packet.getClass().getInterfaces()[0]);
-                                    m.invoke(nh, packet);
-                                    FiguraLink.LOGGER.info("[FiguraLimit] Sent backend address '{}' directly via networkHandler.", address);
-                                    return;
-                                } catch (Throwable ignored) {}
-                            }
-                            for (Method m : nh.getClass().getMethods()) {
-                                if (("sendPacket".equals(m.getName()) || "method_14364".equals(m.getName())) && m.getParameterCount() == 1) {
-                                    try {
-                                        m.invoke(nh, packet);
-                                        FiguraLink.LOGGER.info("[FiguraLimit] Sent backend address '{}' directly via networkHandler.{}.", address, m.getName());
-                                        return;
-                                    } catch (Throwable ignored) {}
-                                }
-                            }
-                        }
-                    }
-                }
-            } catch (Throwable t) {
-                FiguraLink.LOGGER.debug("[FiguraLimit] Direct packet send fallback: {}", t.getMessage());
-            }
-
-            // 2. Standard ServerPlayNetworking.send fallback
-            for (Method m : spn.getMethods()) {
-                if ("send".equals(m.getName()) && m.getParameterCount() == 3) {
-                    m.invoke(null, serverPlayer, channelId, buf);
-                    FiguraLink.LOGGER.info("[FiguraLimit] Sent backend address '{}' to player via ServerPlayNetworking.", address);
-                    return;
-                }
-            }
-        } catch (Throwable t) {
-            FiguraLink.LOGGER.warn("[FiguraLimit] Could not send sync packet: " + t.getMessage());
-        }
+        Object buf = FiguraPacketUtil.createBuf();
+        FiguraPacketUtil.writeString(buf, address);
+        FiguraPacketUtil.sendS2C(serverPlayer, "sync_backend", buf);
+        FiguraLink.LOGGER.info("[FiguraLimit] Sent backend address '{}' to player.", address);
     }
 }

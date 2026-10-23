@@ -2,108 +2,141 @@ package org.figuramc.figuralink.client;
 
 import org.figuramc.figuralink.FiguraLink;
 import org.figuramc.figuralink.config.FiguraLinkConfig;
-import org.figuramc.figuralink.util.FiguraLinkUtil;
+import org.figuramc.figuralink.server.EmbeddedFiguraServer;
+import org.figuramc.figuralink.util.AvatarTransferTracker;
+import org.figuramc.figuralink.util.FiguraPacketUtil;
 
-import java.io.InputStream;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
-import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
-import java.net.URI;
-import java.net.URL;
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 public class FiguraClientSync {
 
+    public static final String UNIFIED_LOCAL_LINK = "127.0.0.1:30007";
     public static final String OFFICIAL_FIGURA_IP = "figura.moonlight-devs.org";
     public static volatile long lastSyncPacketTime = 0;
+    private static final AvatarTransferTracker clientTracker = new AvatarTransferTracker();
 
     public static void init() {
         if (!FiguraLinkConfig.isClientEnvironment()) {
             return;
         }
 
-        registerClientReceiver();
-        registerAvatarUpdateReceiver();
-        registerClientAutoSwitch();
-        startPeriodicAvatarPoller();
+        // Set unified single link immediately
+        setFiguraServerIp(UNIFIED_LOCAL_LINK);
+
+        registerClientReceivers();
+        registerClientConnectionEvents();
     }
 
-    private static void registerClientReceiver() {
+    private interface ClientPacketReceiver {
+        void onPacket(Object buf);
+    }
+
+    private static void registerClientReceivers() {
         try {
             Class<?> cpn = Class.forName("net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking");
             Class<?> idClass = null;
             try { idClass = Class.forName("net.minecraft.util.Identifier"); } 
             catch (Throwable e) { idClass = Class.forName("net.minecraft.class_2960"); }
 
-            Object channelId = idClass.getConstructor(String.class, String.class).newInstance("figuralink", "sync_backend");
-
             Class<?> handlerClass = Class.forName("net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking$PlayChannelHandler");
-            Object handler = Proxy.newProxyInstance(
-                handlerClass.getClassLoader(),
-                new Class<?>[]{handlerClass},
-                (proxy, method, args) -> {
-                    if ("receive".equals(method.getName()) && args != null && args.length >= 3) {
-                        Object buf = args[2];
-                        String address = null;
-                        try {
-                            address = (String) buf.getClass().getMethod("readString").invoke(buf);
-                        } catch (Throwable t) {
-                            try {
-                                address = (String) buf.getClass().getMethod("method_10804").invoke(buf);
-                            } catch (Throwable ignored) {}
-                        }
-
-                        if (address != null && !address.trim().isEmpty()) {
-                            address = address.trim();
-                            lastSyncPacketTime = System.currentTimeMillis();
-                            if (address.startsWith("AUTO:") || address.startsWith("127.0.0.1:") || address.startsWith("localhost:") || address.startsWith(":")) {
-                                String remoteHost = getRemoteServerHost();
-                                if (remoteHost == null || remoteHost.isEmpty() || remoteHost.equals("127.0.0.1") || remoteHost.equals("localhost")) {
-                                    for (int i = 0; i < 5; i++) {
-                                        try { Thread.sleep(200); } catch (InterruptedException ignored) {}
-                                        remoteHost = getRemoteServerHost();
-                                        if (remoteHost != null && !remoteHost.isEmpty() && !remoteHost.equals("127.0.0.1") && !remoteHost.equals("localhost")) {
-                                            break;
-                                        }
-                                    }
-                                }
-                                if (remoteHost != null && !remoteHost.isEmpty() && !remoteHost.equals("127.0.0.1") && !remoteHost.equals("localhost")) {
-                                    int colon = address.lastIndexOf(':');
-                                    String port = (colon != -1) ? address.substring(colon) : (":" + FiguraLinkConfig.getBackendPort());
-                                    address = remoteHost + port;
-                                } else if (address.startsWith("AUTO:")) {
-                                    address = "127.0.0.1:" + address.substring(5);
-                                }
-                            }
-                            FiguraLink.LOGGER.info("[FiguraLimit] Received server backend address from network packet: {}", address);
-                            setFiguraServerIp(address);
-                        }
-                    }
-                    return null;
-                }
-            );
-
             Method regMethod = cpn.getMethod("registerGlobalReceiver", idClass, handlerClass);
-            regMethod.invoke(null, channelId, handler);
-            FiguraLink.LOGGER.info("[FiguraLimit] Registered ClientPlayNetworking receiver for 'figuralink:sync_backend'");
+
+            // 1. sync_backend
+            registerOneReceiver(cpn, idClass, handlerClass, regMethod, "sync_backend", buf -> {
+                String address = FiguraPacketUtil.readString(buf);
+                if (address != null && !address.trim().isEmpty()) {
+                    address = address.trim();
+                    lastSyncPacketTime = System.currentTimeMillis();
+                    FiguraLink.LOGGER.info("[FiguraLimit] Received server backend sync packet: {}", address);
+                    if (address.equals("127.0.0.1:30007") || address.startsWith("AUTO:") || address.startsWith("127.0.0.1:") || address.startsWith("localhost:")) {
+                        setFiguraServerIp(UNIFIED_LOCAL_LINK);
+                    } else {
+                        // User or server explicitly specified an external public domain
+                        setFiguraServerIp(address);
+                    }
+                }
+            });
+
+            // 2. avatar_update
+            registerOneReceiver(cpn, idClass, handlerClass, regMethod, "avatar_update", buf -> {
+                String ownerUuidStr = FiguraPacketUtil.readString(buf);
+                if (ownerUuidStr == null || ownerUuidStr.trim().isEmpty()) return;
+                final String finalUuid = ownerUuidStr.trim();
+                final UUID targetUUID = parseUUID(finalUuid);
+                if (targetUUID == null) return;
+
+                Object mc = getMinecraftClientInstance();
+                UUID localUuid = getLocalPlayerUuid();
+                if (localUuid != null && targetUUID.equals(localUuid)) {
+                    FiguraLink.LOGGER.info("[FiguraLimit] Avatar update is for local player: maintaining local state.");
+                    return;
+                }
+
+                // Check if we have the avatar file locally
+                byte[] localData = EmbeddedFiguraServer.getAvatarBytes(finalUuid);
+                if (localData == null || localData.length == 0) {
+                    FiguraLink.LOGGER.info("[FiguraLimit] Avatar update for {}: file missing locally, requesting from server...", finalUuid);
+                    requestAvatarFromServer(finalUuid);
+                } else {
+                    reloadRemotePlayerAvatar(mc, targetUUID);
+                }
+            });
+
+            // 3. avatar_chunk (S2C received avatar chunk)
+            registerOneReceiver(cpn, idClass, handlerClass, regMethod, "avatar_chunk", buf -> {
+                String ownerUuid = FiguraPacketUtil.readString(buf);
+                String hash = FiguraPacketUtil.readString(buf);
+                int chunkIndex = FiguraPacketUtil.readInt(buf);
+                int totalChunks = FiguraPacketUtil.readInt(buf);
+                byte[] chunkData = FiguraPacketUtil.readByteArray(buf);
+
+                byte[] fullAvatar = clientTracker.handleIncomingChunk(ownerUuid, hash, chunkIndex, totalChunks, chunkData);
+                if (fullAvatar != null) {
+                    FiguraLink.LOGGER.info("[FiguraLimit] Fully received avatar for {} (size: {} bytes). Saving...", ownerUuid, fullAvatar.length);
+                    EmbeddedFiguraServer.saveAvatarFile(ownerUuid, hash, fullAvatar);
+
+                    Object mc = getMinecraftClientInstance();
+                    UUID targetUUID = parseUUID(ownerUuid);
+                    UUID localUuid = getLocalPlayerUuid();
+                    if (localUuid != null && targetUUID != null && localUuid.equals(targetUUID)) {
+                        FiguraLink.LOGGER.info("[FiguraLimit] Downloaded avatar is local player's own avatar.");
+                        return;
+                    }
+                    if (targetUUID != null) {
+                        reloadRemotePlayerAvatar(mc, targetUUID);
+                    }
+                }
+            });
+
+            // 4. request_avatar (Server requests local avatar from client)
+            registerOneReceiver(cpn, idClass, handlerClass, regMethod, "request_avatar", buf -> {
+                String reqUuid = FiguraPacketUtil.readString(buf);
+                UUID localUuid = getLocalPlayerUuid();
+                if (reqUuid != null && localUuid != null && reqUuid.trim().equalsIgnoreCase(localUuid.toString())) {
+                    FiguraLink.LOGGER.info("[FiguraLimit] Server requested our local avatar. Streaming chunks to server...");
+                    byte[] data = EmbeddedFiguraServer.getAvatarBytes(reqUuid.trim());
+                    if (data != null && data.length > 0) {
+                        String hash = EmbeddedFiguraServer.getUserEquipped(reqUuid.trim());
+                        sendAvatarChunksToServer(reqUuid.trim(), hash, data);
+                    }
+                }
+            });
+
         } catch (Throwable t) {
-            FiguraLink.LOGGER.debug("[FiguraLimit] Client networking receiver skipped: " + t.getMessage());
+            FiguraLink.LOGGER.debug("[FiguraLimit] Client networking registration skipped: " + t.getMessage());
         }
     }
 
-    private static void registerAvatarUpdateReceiver() {
+    private static void registerOneReceiver(Class<?> cpn, Class<?> idClass, Class<?> handlerClass, Method regMethod, String channelName, ClientPacketReceiver receiver) {
         try {
-            Class<?> cpn = Class.forName("net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking");
-            Class<?> idClass = null;
-            try { idClass = Class.forName("net.minecraft.util.Identifier"); } 
-            catch (Throwable e) { idClass = Class.forName("net.minecraft.class_2960"); }
-
-            Object channelId = idClass.getConstructor(String.class, String.class).newInstance("figuralink", "avatar_update");
-
-            Class<?> handlerClass = Class.forName("net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking$PlayChannelHandler");
+            Object channelId = idClass.getConstructor(String.class, String.class).newInstance("figuralink", channelName);
             Object handler = Proxy.newProxyInstance(
                 handlerClass.getClassLoader(),
                 new Class<?>[]{handlerClass},
@@ -111,80 +144,236 @@ public class FiguraClientSync {
                     if ("receive".equals(method.getName()) && args != null) {
                         Object buf = null;
                         for (Object arg : args) {
-                            if (arg != null && arg.getClass().getName().contains("Buf")) {
-                                buf = arg;
-                                break;
+                            if (arg != null) {
+                                String cName = arg.getClass().getName();
+                                if (cName.contains("Buf") || cName.endsWith("class_2540")) {
+                                    buf = arg;
+                                    break;
+                                }
                             }
                         }
                         if (buf == null && args.length >= 3) {
                             buf = args[2];
                         }
-                        if (buf == null) return null;
-
-                        String ownerUuidStr = null;
-                        try {
-                            ownerUuidStr = (String) buf.getClass().getMethod("readString").invoke(buf);
-                        } catch (Throwable t) {
-                            try {
-                                ownerUuidStr = (String) buf.getClass().getMethod("method_10804").invoke(buf);
-                            } catch (Throwable ignored) {}
-                        }
-
-                        if (ownerUuidStr == null || ownerUuidStr.trim().isEmpty()) return null;
-                        final String finalUuid = ownerUuidStr.trim();
-                        FiguraLink.LOGGER.info("[FiguraLimit] Received avatar update packet for: {}", finalUuid);
-                        final UUID targetUUID = parseUUID(finalUuid);
-                        if (targetUUID == null) {
-                            FiguraLink.LOGGER.warn("[FiguraLimit] Could not parse UUID from update packet: {}", finalUuid);
-                            return null;
-                        }
-
-                        try {
-                            Class<?> mcClass = null;
-                            try { mcClass = Class.forName("net.minecraft.client.MinecraftClient"); }
-                            catch (Throwable e) { mcClass = Class.forName("net.minecraft.class_310"); }
-                            Object mc = mcClass.getMethod("getInstance").invoke(null);
-                            if (mc != null) {
-                                Method exec = mc.getClass().getMethod("execute", Runnable.class);
-                                exec.invoke(mc, (Runnable) () -> {
-                                    try {
-                                        Class<?> fm = Class.forName("org.figuramc.figura.FiguraMod");
-                                        Object localUuid = fm.getMethod("getLocalPlayerUUID").invoke(null);
-                                        if (targetUUID.equals(localUuid)) {
-                                            Class<?> am = Class.forName("org.figuramc.figura.avatar.AvatarManager");
-                                            try {
-                                                Field lu = am.getDeclaredField("localUploaded");
-                                                lu.setAccessible(true);
-                                                lu.setBoolean(null, true);
-                                            } catch (Throwable ignored) {}
-                                            FiguraLink.LOGGER.info("[FiguraLimit] Avatar update packet is for local player: keeping local avatar.");
-                                            return;
-                                        }
-
-                                        reloadRemotePlayerAvatar(mc, targetUUID);
-                                    } catch (Throwable ignored) {}
-                                });
-                            }
-                        } catch (Throwable t) {
-                            try {
-                                Class<?> am = Class.forName("org.figuramc.figura.avatar.AvatarManager");
-                                try {
-                                    Method clear = am.getMethod("clearAvatars", UUID.class);
-                                    clear.invoke(null, targetUUID);
-                                } catch (Throwable ignored) {}
-                            } catch (Throwable ignored) {}
+                        if (receiver != null && buf != null) {
+                            receiver.onPacket(buf);
                         }
                     }
                     return null;
                 }
             );
-
-            Method regMethod = cpn.getMethod("registerGlobalReceiver", idClass, handlerClass);
             regMethod.invoke(null, channelId, handler);
-            FiguraLink.LOGGER.info("[FiguraLimit] Registered ClientPlayNetworking receiver for 'figuralink:avatar_update'");
+            FiguraLink.LOGGER.info("[FiguraLimit] Registered Client receiver for 'figuralink:{}'", channelName);
         } catch (Throwable t) {
-            FiguraLink.LOGGER.debug("[FiguraLimit] Avatar update receiver skipped: " + t.getMessage());
+            FiguraLink.LOGGER.debug("[FiguraLimit] Failed to register client receiver for '{}': {}", channelName, t.getMessage());
         }
+    }
+
+    private static void registerClientConnectionEvents() {
+        try {
+            Class<?> eventsClass = Class.forName("net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents");
+            Object joinEvent = eventsClass.getField("JOIN").get(null);
+
+            Class<?> listenerClass = Class.forName("net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents$Join");
+            Object listener = Proxy.newProxyInstance(
+                listenerClass.getClassLoader(),
+                new Class<?>[]{listenerClass},
+                (proxy, method, args) -> {
+                    if ("onPlayReady".equals(method.getName())) {
+                        onJoinServer();
+                    }
+                    return null;
+                }
+            );
+
+            Class<?> eventClass = Class.forName("net.fabricmc.fabric.api.event.Event");
+            Method regMethod = null;
+            for (Method m : eventClass.getMethods()) {
+                if ("register".equals(m.getName()) && m.getParameterCount() == 1) {
+                    regMethod = m;
+                    break;
+                }
+            }
+            if (regMethod != null) {
+                regMethod.setAccessible(true);
+                regMethod.invoke(joinEvent, listener);
+                FiguraLink.LOGGER.info("[FiguraLimit] Registered ClientPlayConnectionEvents.JOIN.");
+            }
+
+            // Register DISCONNECT event
+            try {
+                Object disconnectEvent = eventsClass.getField("DISCONNECT").get(null);
+                Class<?> disconnectClass = Class.forName("net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents$Disconnect");
+                Object disconnectListener = Proxy.newProxyInstance(
+                    disconnectClass.getClassLoader(),
+                    new Class<?>[]{disconnectClass},
+                    (proxy, method, args) -> {
+                        FiguraLink.LOGGER.info("[FiguraLimit] Client disconnected from server: maintaining unified local link.");
+                        setFiguraServerIp(UNIFIED_LOCAL_LINK);
+                        return null;
+                    }
+                );
+                if (regMethod != null) {
+                    regMethod.invoke(disconnectEvent, disconnectListener);
+                    FiguraLink.LOGGER.info("[FiguraLimit] Registered ClientPlayConnectionEvents.DISCONNECT.");
+                }
+            } catch (Throwable t) {
+                FiguraLink.LOGGER.debug("[FiguraLimit] Client disconnect listener registration: " + t.getMessage());
+            }
+        } catch (Throwable t) {
+            FiguraLink.LOGGER.warn("[FiguraLimit] Client connection listener skipped: " + t.getMessage());
+        }
+    }
+
+    public static void onJoinServer() {
+        new Thread(() -> {
+            try { Thread.sleep(500); } catch (InterruptedException ignored) {}
+
+            // 1. Ensure unified single link
+            setFiguraServerIp(UNIFIED_LOCAL_LINK);
+
+            if (isSingleplayer()) {
+                FiguraLink.LOGGER.info("[FiguraLimit] Singleplayer world: local backend active on {}", UNIFIED_LOCAL_LINK);
+                return;
+            }
+
+            // 2. Request backend sync packet from server
+            requestBackendFromServer();
+
+            // 3. Send handshake with our local player UUID and equipped avatar hash
+            UUID localUuid = getLocalPlayerUuid();
+            if (localUuid != null) {
+                String hash = EmbeddedFiguraServer.getUserEquipped(localUuid.toString());
+                if (hash == null) hash = "";
+
+                FiguraLink.LOGGER.info("[FiguraLimit] Sending handshake to server for local player {} (hash: '{}')", localUuid, hash);
+                Object buf = FiguraPacketUtil.createBuf();
+                FiguraPacketUtil.writeString(buf, localUuid.toString());
+                FiguraPacketUtil.writeString(buf, hash);
+                FiguraPacketUtil.sendC2S("handshake", buf);
+            }
+        }, "FiguraLimit-OnJoinServer").start();
+    }
+
+    public static void onLocalAvatarSaved(String ownerUuid, byte[] data, String hash) {
+        if (ownerUuid == null || data == null || data.length == 0) return;
+        if (isSingleplayer()) {
+            FiguraLink.LOGGER.info("[FiguraLimit] Avatar saved in singleplayer. Local storage updated.");
+            return;
+        }
+
+        FiguraLink.LOGGER.info("[FiguraLimit] Local avatar saved for {}. Streaming avatar chunks to server...", ownerUuid);
+        new Thread(() -> {
+            sendAvatarChunksToServer(ownerUuid, hash, data);
+        }, "FiguraLimit-UploadChunks").start();
+    }
+
+    public static void onLocalAvatarEquipped(String ownerUuid) {
+        if (ownerUuid == null || isSingleplayer()) return;
+        String hash = EmbeddedFiguraServer.getUserEquipped(ownerUuid);
+        if (hash == null) hash = "avatar";
+
+        FiguraLink.LOGGER.info("[FiguraLimit] Local avatar equipped for {}. Sending handshake to server...", ownerUuid);
+        Object buf = FiguraPacketUtil.createBuf();
+        FiguraPacketUtil.writeString(buf, ownerUuid);
+        FiguraPacketUtil.writeString(buf, hash);
+        FiguraPacketUtil.sendC2S("handshake", buf);
+    }
+
+    public static void sendAvatarChunksToServer(String ownerUuid, String hash, byte[] data) {
+        if (ownerUuid == null || data == null || data.length == 0) return;
+        AvatarTransferTracker.streamChunks(ownerUuid, hash, data, (uuid, h, chunkIdx, totalChunks, chunk) -> {
+            Object buf = FiguraPacketUtil.createBuf();
+            FiguraPacketUtil.writeString(buf, uuid);
+            FiguraPacketUtil.writeString(buf, h);
+            FiguraPacketUtil.writeInt(buf, chunkIdx);
+            FiguraPacketUtil.writeInt(buf, totalChunks);
+            FiguraPacketUtil.writeByteArray(buf, chunk);
+            FiguraPacketUtil.sendC2S("avatar_chunk", buf);
+        });
+    }
+
+    public static void requestAvatarFromServer(String ownerUuid) {
+        if (ownerUuid == null || ownerUuid.trim().isEmpty()) return;
+        Object buf = FiguraPacketUtil.createBuf();
+        FiguraPacketUtil.writeString(buf, ownerUuid.trim());
+        FiguraPacketUtil.sendC2S("request_avatar", buf);
+    }
+
+    public static void requestBackendFromServer() {
+        for (int delay : new int[]{0, 200, 600, 1500}) {
+            try {
+                if (delay > 0) Thread.sleep(delay);
+                Object buf = FiguraPacketUtil.createBuf();
+                FiguraPacketUtil.sendC2S("request_backend", buf);
+                FiguraLink.LOGGER.debug("[FiguraLimit] Sent request_backend packet to server.");
+            } catch (Throwable ignored) {}
+        }
+    }
+
+    public static boolean setFiguraServerIp(String target) {
+        if (target == null || target.trim().isEmpty()) {
+            target = UNIFIED_LOCAL_LINK;
+        }
+        try {
+            Class<?> configs = Class.forName("org.figuramc.figura.config.Configs");
+            Object serverIpConfig = configs.getField("SERVER_IP").get(null);
+            String current = (String) serverIpConfig.getClass().getField("value").get(serverIpConfig);
+            if (target.equals(current)) {
+                return true;
+            }
+
+            Method setValue = serverIpConfig.getClass().getMethod("setValue", String.class);
+            setValue.invoke(serverIpConfig, target);
+
+            FiguraLink.LOGGER.info("[FiguraLimit] Configured Figura Server Link to: {}", target);
+
+            // Trigger re-authentication with backend
+            Class<?> ns = Class.forName("org.figuramc.figura.backend2.NetworkStuff");
+            ns.getMethod("reAuth").invoke(null);
+
+            // Reset localUploaded in AvatarManager so upload button is ready
+            try {
+                Class<?> am = Class.forName("org.figuramc.figura.avatar.AvatarManager");
+                Field lu = am.getDeclaredField("localUploaded");
+                lu.setAccessible(true);
+                lu.setBoolean(null, false);
+            } catch (Throwable ignored) {}
+
+            return true;
+        } catch (Throwable t) {
+            FiguraLink.LOGGER.warn("[FiguraLimit] Failed to set Figura Server IP to " + target + ": " + t.getMessage());
+            return false;
+        }
+    }
+
+    public static UUID getLocalPlayerUuid() {
+        try {
+            Class<?> fm = Class.forName("org.figuramc.figura.FiguraMod");
+            Object u = fm.getMethod("getLocalPlayerUUID").invoke(null);
+            if (u instanceof UUID) return (UUID) u;
+        } catch (Throwable ignored) {}
+
+        Object mc = getMinecraftClientInstance();
+        if (mc != null) {
+            try {
+                for (String mName : new String[]{"getSession", "method_1548"}) {
+                    try {
+                        Object session = mc.getClass().getMethod(mName).invoke(mc);
+                        if (session != null) {
+                            for (String smName : new String[]{"getUuidOrNull", "getProfileId", "method_1676"}) {
+                                try {
+                                    Object id = session.getClass().getMethod(smName).invoke(session);
+                                    if (id instanceof UUID) return (UUID) id;
+                                    if (id instanceof String) return parseUUID((String) id);
+                                } catch (Throwable ignored) {}
+                            }
+                        }
+                    } catch (Throwable ignored) {}
+                }
+            } catch (Throwable ignored) {}
+        }
+        return null;
     }
 
     public static UUID parseUUID(String s) {
@@ -202,184 +391,34 @@ public class FiguraClientSync {
         }
     }
 
-    private static void registerClientAutoSwitch() {
+    public static void reloadRemotePlayerAvatar(Object mc, UUID targetUUID) {
+        if (mc == null || targetUUID == null) return;
         try {
-            Class<?> eventsClass = Class.forName("net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents");
-            Object joinEvent = eventsClass.getField("JOIN").get(null);
-
-            Class<?> listenerClass = Class.forName("net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents$Join");
-            Object listener = Proxy.newProxyInstance(
-                listenerClass.getClassLoader(),
-                new Class<?>[]{listenerClass},
-                (proxy, method, args) -> {
-                    if ("onPlayReady".equals(method.getName())) {
-                        switchToServerBackend();
-                    }
-                    return null;
-                }
-            );
-
-            Class<?> eventClass = Class.forName("net.fabricmc.fabric.api.event.Event");
-            Method regMethod = null;
-            for (Method m : eventClass.getMethods()) {
-                if ("register".equals(m.getName()) && m.getParameterCount() == 1) {
-                    regMethod = m;
-                    break;
-                }
-            }
-            if (regMethod != null) {
-                regMethod.setAccessible(true);
-                regMethod.invoke(joinEvent, listener);
-                FiguraLink.LOGGER.info("[FiguraLimit] Registered ClientPlayConnectionEvents.JOIN for client auto-switch.");
-            }
-
-            // Register DISCONNECT event to restore official Figura cloud
-            try {
-                Object disconnectEvent = eventsClass.getField("DISCONNECT").get(null);
-                Class<?> disconnectClass = Class.forName("net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents$Disconnect");
-                Object disconnectListener = Proxy.newProxyInstance(
-                    disconnectClass.getClassLoader(),
-                    new Class<?>[]{disconnectClass},
-                    (proxy, method, args) -> {
-                        FiguraLink.LOGGER.info("[FiguraLimit] Client disconnected from server: restoring official Figura backend.");
-                        restoreOfficialBackend();
-                        return null;
-                    }
-                );
-                if (regMethod != null) {
-                    regMethod.invoke(disconnectEvent, disconnectListener);
-                    FiguraLink.LOGGER.info("[FiguraLimit] Registered ClientPlayConnectionEvents.DISCONNECT to restore official backend.");
-                }
-            } catch (Throwable t) {
-                FiguraLink.LOGGER.debug("[FiguraLimit] Client disconnect listener registration: " + t.getMessage());
-            }
-        } catch (Throwable t) {
-            FiguraLink.LOGGER.warn("[FiguraLimit] Client connection listener skipped: " + t.getMessage());
-        }
-    }
-
-    public static void switchToServerBackend() {
-        new Thread(() -> {
-            String remoteHost = null;
-            for (int i = 0; i < 15; i++) {
-                if (isSingleplayer()) {
-                    FiguraLink.LOGGER.info("[FiguraLimit] Singleplayer world detected: using official Figura cloud.");
-                    restoreOfficialBackend();
-                    return;
-                }
-                remoteHost = getRemoteServerHost();
-                if (remoteHost != null && !remoteHost.isEmpty() && !remoteHost.equals("127.0.0.1") && !remoteHost.equals("localhost")) {
-                    break;
-                }
+            Method exec = mc.getClass().getMethod("execute", Runnable.class);
+            exec.invoke(mc, (Runnable) () -> {
                 try {
-                    Thread.sleep(200);
-                } catch (InterruptedException ignored) {}
-            }
+                    Class<?> am = Class.forName("org.figuramc.figura.avatar.AvatarManager");
+                    try {
+                        Method clear = am.getMethod("clearAvatars", UUID.class);
+                        clear.invoke(null, targetUUID);
+                    } catch (Throwable ignored) {}
 
-            if (remoteHost != null && !remoteHost.isEmpty() && !remoteHost.equals("127.0.0.1") && !remoteHost.equals("localhost")) {
-                FiguraLink.LOGGER.info("[FiguraLimit] Joined remote server: {}. Requesting backend address from server...", remoteHost);
-                long requestStartTime = System.currentTimeMillis();
-
-                // Request backend address packet from server (server responds with the exact port configured in figura-limit.properties)
-                requestBackendFromServer();
-
-                // If user specifically configured a non-standard port on client, probe it as fallback
-                probeBackendPorts(remoteHost);
-
-                // Wait up to 3.5 seconds to see if server sends sync packet
-                try {
-                    Thread.sleep(3500);
-                } catch (InterruptedException ignored) {}
-
-                // If after 3.5 seconds, no sync packet arrived:
-                // This means the server does NOT have FiguraLimit mod installed (e.g. Hypixel, vanilla, other servers)
-                if (lastSyncPacketTime < requestStartTime) {
-                    FiguraLink.LOGGER.info("[FiguraLimit] No response from {} (mod not on server): restoring official Figura backend.", remoteHost);
-                    restoreOfficialBackend();
-                }
-                return;
-            }
-
-            // Singleplayer or local world: ALWAYS use official Figura Cloud
-            FiguraLink.LOGGER.info("[FiguraLimit] Singleplayer/private world detected: using official Figura cloud.");
-            restoreOfficialBackend();
-        }, "FiguraLimit-AutoSwitch").start();
-    }
-
-    private static void probeBackendPorts(String remoteHost) {
-        new Thread(() -> {
-            int currentPort = FiguraLinkConfig.getBackendPort();
-            int[] portsToTest = (currentPort > 0 && currentPort != 30007) 
-                    ? new int[]{currentPort, 7070, 25566, 25565} 
-                    : new int[]{7070, 25566, 25565};
-            for (int port : portsToTest) {
-                if (port <= 0) continue;
-                try {
-                    URL url = URI.create("http://" + remoteHost + ":" + port + "/version").toURL();
-                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                    conn.setConnectTimeout(1500);
-                    conn.setReadTimeout(1500);
-                    conn.setRequestMethod("GET");
-                    int code = conn.getResponseCode();
-                    if (code == 200) {
-                        try (InputStream in = conn.getInputStream()) {
-                            byte[] bytes = in.readAllBytes();
-                            String text = new String(bytes);
-                            if (text.contains("release") || text.contains("0.1.6") || text.contains("figura")) {
-                                String workingAddr = remoteHost + ":" + port;
-                                FiguraLink.LOGGER.info("[FiguraLimit] HTTP probe verified active Figura backend at: {}", workingAddr);
-                                setFiguraServerIp(workingAddr);
-                                return;
-                            }
-                        }
+                    try {
+                        Method fetchBackend = am.getDeclaredMethod("fetchBackend", UUID.class);
+                        fetchBackend.setAccessible(true);
+                        fetchBackend.invoke(null, targetUUID);
+                        FiguraLink.LOGGER.info("[FiguraLimit] Triggered fetchBackend for remote player: {}", targetUUID);
+                    } catch (Throwable t) {
+                        try {
+                            Method reload = am.getMethod("reloadAvatar", UUID.class);
+                            reload.invoke(null, targetUUID);
+                        } catch (Throwable ignored) {}
                     }
+
+                    FiguraLink.LOGGER.info("[FiguraLimit] Successfully refreshed avatar for player: {}", targetUUID);
                 } catch (Throwable ignored) {}
-            }
-        }, "FiguraLimit-PortProbe").start();
-    }
-
-    public static void requestBackendFromServer() {
-        new Thread(() -> {
-            for (int delay : new int[]{50, 200, 500, 1200, 2500, 5000}) {
-                try {
-                    Thread.sleep(delay);
-                    Class<?> cpn = Class.forName("net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking");
-                    Class<?> idClass = null;
-                    try { idClass = Class.forName("net.minecraft.util.Identifier"); }
-                    catch (Throwable e) { idClass = Class.forName("net.minecraft.class_2960"); }
-                    Object channelId = idClass.getConstructor(String.class, String.class).newInstance("figuralink", "request_backend");
-
-                    Class<?> pbb = Class.forName("net.fabricmc.fabric.api.networking.v1.PacketByteBufs");
-                    Object buf = pbb.getMethod("create").invoke(null);
-
-                    for (Method m : cpn.getMethods()) {
-                        if ("send".equals(m.getName()) && m.getParameterCount() == 2) {
-                            m.invoke(null, channelId, buf);
-                            FiguraLink.LOGGER.debug("[FiguraLimit] Sent request_backend packet to server.");
-                            break;
-                        }
-                    }
-                } catch (Throwable ignored) {}
-            }
-        }, "FiguraLimit-RequestBackend").start();
-    }
-
-    public static void restoreOfficialBackend() {
-        try {
-            Class<?> configs = Class.forName("org.figuramc.figura.config.Configs");
-            Object serverIpConfig = configs.getField("SERVER_IP").get(null);
-            String current = (String) serverIpConfig.getClass().getField("value").get(serverIpConfig);
-            if (!OFFICIAL_FIGURA_IP.equals(current)) {
-                Method setValue = serverIpConfig.getClass().getMethod("setValue", String.class);
-                setValue.invoke(serverIpConfig, OFFICIAL_FIGURA_IP);
-                FiguraLink.LOGGER.info("[FiguraLimit] Restored official Figura Cloud IP: {}", OFFICIAL_FIGURA_IP);
-
-                Class<?> ns = Class.forName("org.figuramc.figura.backend2.NetworkStuff");
-                ns.getMethod("reAuth").invoke(null);
-            }
-        } catch (Throwable t) {
-            FiguraLink.LOGGER.warn("[FiguraLimit] Failed to restore official Figura Cloud IP: " + t.getMessage());
-        }
+            });
+        } catch (Throwable ignored) {}
     }
 
     public static boolean isSingleplayer() {
@@ -387,7 +426,6 @@ public class FiguraClientSync {
             Object mc = getMinecraftClientInstance();
             if (mc == null) return false;
 
-            // 1. isIntegratedServerRunning()
             for (String mName : new String[]{"isIntegratedServerRunning", "method_1496"}) {
                 try {
                     Method m = mc.getClass().getMethod(mName);
@@ -398,7 +436,6 @@ public class FiguraClientSync {
                 } catch (Throwable ignored) {}
             }
 
-            // 2. getServer() / isLocalServer()
             for (String mName : new String[]{"getServer", "method_1576"}) {
                 try {
                     Method m = mc.getClass().getMethod(mName);
@@ -427,336 +464,19 @@ public class FiguraClientSync {
         return null;
     }
 
+    public static void switchToServerBackend() {
+        onJoinServer();
+    }
+
     public static String getRemoteServerHost() {
-        String raw = getRemoteServerAddress();
-        if (raw == null || raw.trim().isEmpty()) {
-            return null;
-        }
-        raw = raw.trim();
-        if (raw.contains(":")) {
-            raw = raw.substring(0, raw.indexOf(':'));
-        }
-        if (raw.startsWith("[") && raw.endsWith("]")) {
-            raw = raw.substring(1, raw.length() - 1);
-        }
-        return raw;
-    }
-
-    public static String getRemoteServerAddress() {
-        try {
-            Object mc = getMinecraftClientInstance();
-            if (mc == null) return null;
-
-            if (isSingleplayer()) {
-                return null;
-            }
-
-            // 1. Check ServerInfo (getCurrentServerEntry / method_1558)
-            Object serverEntry = null;
-            for (String mName : new String[]{"getCurrentServerEntry", "method_1558"}) {
-                try {
-                    Method m = mc.getClass().getMethod(mName);
-                    serverEntry = m.invoke(mc);
-                    if (serverEntry != null) break;
-                } catch (Throwable ignored) {}
-            }
-
-            if (serverEntry != null) {
-                for (String fieldName : new String[]{"field_3761", "address", "b"}) {
-                    try {
-                        Field f = serverEntry.getClass().getDeclaredField(fieldName);
-                        f.setAccessible(true);
-                        Object val = f.get(serverEntry);
-                        if (val instanceof String && !((String) val).trim().isEmpty()) {
-                            return ((String) val).trim();
-                        }
-                    } catch (Throwable ignored) {}
-                }
-                for (Field f : serverEntry.getClass().getDeclaredFields()) {
-                    if (f.getType() == String.class) {
-                        try {
-                            f.setAccessible(true);
-                            String s = (String) f.get(serverEntry);
-                            if (s != null && (s.contains(".") || s.contains(":"))) {
-                                return s.trim();
-                            }
-                        } catch (Throwable ignored) {}
-                    }
-                }
-            }
-
-            // 2. Check NetworkHandler connection address
-            Object nh = null;
-            for (String mName : new String[]{"getNetworkHandler", "method_1562"}) {
-                try {
-                    Method m = mc.getClass().getMethod(mName);
-                    nh = m.invoke(mc);
-                    if (nh != null) break;
-                } catch (Throwable ignored) {}
-            }
-
-            if (nh != null) {
-                Object conn = null;
-                for (String mName : new String[]{"getConnection", "method_48296"}) {
-                    try {
-                        Method m = nh.getClass().getMethod(mName);
-                        conn = m.invoke(nh);
-                        if (conn != null) break;
-                    } catch (Throwable ignored) {}
-                }
-
-                if (conn == null) {
-                    for (Field f : nh.getClass().getDeclaredFields()) {
-                        String typeName = f.getType().getName();
-                        if (typeName.endsWith("ClientConnection") || typeName.endsWith("class_2535") || typeName.equals("sd")) {
-                            try {
-                                f.setAccessible(true);
-                                conn = f.get(nh);
-                                if (conn != null) break;
-                            } catch (Throwable ignored) {}
-                        }
-                    }
-                }
-
-                if (conn != null) {
-                    Object addr = null;
-                    for (String mName : new String[]{"getAddress", "method_10755"}) {
-                        try {
-                            Method m = conn.getClass().getMethod(mName);
-                            addr = m.invoke(conn);
-                            if (addr != null) break;
-                        } catch (Throwable ignored) {}
-                    }
-
-                    if (addr instanceof InetSocketAddress) {
-                        InetSocketAddress isa = (InetSocketAddress) addr;
-                        String host = isa.getHostString();
-                        int port = isa.getPort();
-                        return (port > 0 && port != 25565) ? (host + ":" + port) : host;
-                    } else if (addr != null) {
-                        return addr.toString().replaceAll("^/+", "");
-                    }
-                }
-            }
-        } catch (Throwable ignored) {}
-        return null;
-    }
-
-    public static boolean setFiguraServerIp(String target) {
-        try {
-            Class<?> configs = Class.forName("org.figuramc.figura.config.Configs");
-            Object serverIpConfig = configs.getField("SERVER_IP").get(null);
-            String current = (String) serverIpConfig.getClass().getField("value").get(serverIpConfig);
-            if (target.equals(current)) {
-                return true;
-            }
-
-            Method setValue = serverIpConfig.getClass().getMethod("setValue", String.class);
-            setValue.invoke(serverIpConfig, target);
-
-            FiguraLink.LOGGER.info("[FiguraLimit] Automatically updated Figura Cloud IP to: {}", target);
-
-            // Trigger re-authentication with new backend
-            Class<?> ns = Class.forName("org.figuramc.figura.backend2.NetworkStuff");
-            ns.getMethod("reAuth").invoke(null);
-
-            // Reset localUploaded in AvatarManager so upload button is ready
-            try {
-                Class<?> am = Class.forName("org.figuramc.figura.avatar.AvatarManager");
-                Field lu = am.getDeclaredField("localUploaded");
-                lu.setAccessible(true);
-                lu.setBoolean(null, false);
-            } catch (Throwable ignored) {}
-
-            return true;
-        } catch (Throwable t) {
-            FiguraLink.LOGGER.warn("[FiguraLimit] Failed to update Figura Cloud IP to " + target + ": " + t.getMessage());
-            return false;
-        }
-    }
-
-    private static final java.util.Map<UUID, String> knownRemoteAvatarHashes = new ConcurrentHashMap<>();
-    private static volatile boolean pollerRunning = false;
-
-    private static void startPeriodicAvatarPoller() {
-        if (pollerRunning) return;
-        pollerRunning = true;
-
-        Thread pollerThread = new Thread(() -> {
-            while (true) {
-                try {
-                    Thread.sleep(3000); // Check every 3 seconds
-
-                    String serverIp = FiguraLinkUtil.getServerIp();
-                    if (serverIp == null || serverIp.isEmpty() || !FiguraLinkUtil.isCustomBackend() || isSingleplayer()) {
-                        knownRemoteAvatarHashes.clear();
-                        continue;
-                    }
-
-                    Object mc = getMinecraftClientInstance();
-                    if (mc == null) continue;
-
-                    String baseUrl = (serverIp.startsWith("http://") || serverIp.startsWith("https://")) 
-                            ? serverIp 
-                            : ("http://" + serverIp);
-
-                    UUID localUuid = null;
-                    try {
-                        Class<?> fm = Class.forName("org.figuramc.figura.FiguraMod");
-                        Object u = fm.getMethod("getLocalPlayerUUID").invoke(null);
-                        if (u instanceof UUID) localUuid = (UUID) u;
-                    } catch (Throwable ignored) {}
-
-                    java.util.Collection<UUID> currentPlayers = getClientOnlinePlayerUUIDs(mc);
-                    if (currentPlayers == null || currentPlayers.isEmpty()) continue;
-
-                    for (UUID playerUuid : currentPlayers) {
-                        if (localUuid != null && playerUuid.equals(localUuid)) {
-                            continue;
-                        }
-
-                        String hash = fetchEquippedHashFromBackend(baseUrl, playerUuid);
-                        if (hash == null) continue;
-
-                        String previousHash = knownRemoteAvatarHashes.get(playerUuid);
-                        if (previousHash == null) {
-                            knownRemoteAvatarHashes.put(playerUuid, hash);
-                        } else if (!previousHash.equals(hash)) {
-                            FiguraLink.LOGGER.info("[FiguraLimit] Detected avatar change via background poll for {}: old={}, new={}", 
-                                    playerUuid, previousHash, hash);
-                            knownRemoteAvatarHashes.put(playerUuid, hash);
-
-                            reloadRemotePlayerAvatar(mc, playerUuid);
-                        }
-                    }
-                } catch (Throwable ignored) {}
-            }
-        }, "FiguraLimit-AvatarPoller");
-        pollerThread.setDaemon(true);
-        pollerThread.start();
-        FiguraLink.LOGGER.info("[FiguraLimit] Started background real-time avatar poller.");
-    }
-
-    private static String fetchEquippedHashFromBackend(String baseUrl, UUID playerUuid) {
-        try {
-            URL url = URI.create(baseUrl + "/" + playerUuid.toString()).toURL();
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("GET");
-            conn.setConnectTimeout(1500);
-            conn.setReadTimeout(1500);
-            int code = conn.getResponseCode();
-            if (code == 200) {
-                try (InputStream in = conn.getInputStream()) {
-                    String json = new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
-                    java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"hash\"\\s*:\\s*\"([^\"]+)\"").matcher(json);
-                    if (m.find()) {
-                        return m.group(1);
-                    }
-                    return "empty";
-                }
-            }
-        } catch (Throwable ignored) {}
-        return null;
-    }
-
-    public static void reloadRemotePlayerAvatar(Object mc, UUID targetUUID) {
-        if (mc == null || targetUUID == null) return;
-        try {
-            Method exec = mc.getClass().getMethod("execute", Runnable.class);
-            exec.invoke(mc, (Runnable) () -> {
-                try {
-                    Class<?> am = Class.forName("org.figuramc.figura.avatar.AvatarManager");
-                    try {
-                        Method clear = am.getMethod("clearAvatars", UUID.class);
-                        clear.invoke(null, targetUUID);
-                    } catch (Throwable ignored) {}
-
-                    try {
-                        Method fetchBackend = am.getDeclaredMethod("fetchBackend", UUID.class);
-                        fetchBackend.setAccessible(true);
-                        fetchBackend.invoke(null, targetUUID);
-                        FiguraLink.LOGGER.info("[FiguraLimit] Triggered fetchBackend for remote player: {}", targetUUID);
-                    } catch (Throwable t) {
-                        try {
-                            Method reload = am.getMethod("reloadAvatar", UUID.class);
-                            reload.invoke(null, targetUUID);
-                        } catch (Throwable ignored) {}
-                    }
-
-                    FiguraLink.LOGGER.info("[FiguraLimit] Successfully refreshed avatar for remote player: {}", targetUUID);
-                } catch (Throwable ignored) {}
-            });
-        } catch (Throwable ignored) {}
-    }
-
-    public static java.util.Collection<UUID> getClientOnlinePlayerUUIDs(Object mc) {
-        java.util.Set<UUID> list = new java.util.HashSet<>();
-        try {
-            Object nh = null;
-            for (String mName : new String[]{"getNetworkHandler", "method_1562"}) {
-                try {
-                    nh = mc.getClass().getMethod(mName).invoke(mc);
-                    if (nh != null) break;
-                } catch (Throwable ignored) {}
-            }
-            if (nh != null) {
-                Object playerEntries = null;
-                for (String mName : new String[]{"getPlayerList", "method_2880", "getPlayerUuids", "method_31363"}) {
-                    try {
-                        playerEntries = nh.getClass().getMethod(mName).invoke(nh);
-                        if (playerEntries != null) break;
-                    } catch (Throwable ignored) {}
-                }
-                if (playerEntries instanceof java.util.Collection) {
-                    for (Object entry : (java.util.Collection<?>) playerEntries) {
-                        if (entry instanceof UUID) {
-                            list.add((UUID) entry);
-                        } else if (entry != null) {
-                            try {
-                                Method getProfile = null;
-                                for (String pName : new String[]{"getProfile", "method_2966"}) {
-                                    try {
-                                        getProfile = entry.getClass().getMethod(pName);
-                                        break;
-                                    } catch (Throwable ignored) {}
-                                }
-                                if (getProfile != null) {
-                                    Object profile = getProfile.invoke(entry);
-                                    if (profile != null) {
-                                        Method getId = profile.getClass().getMethod("getId");
-                                        Object id = getId.invoke(profile);
-                                        if (id instanceof UUID) {
-                                            list.add((UUID) id);
-                                        }
-                                    }
-                                }
-                            } catch (Throwable ignored) {}
-                        }
-                    }
-                }
-            }
-        } catch (Throwable ignored) {}
-        return list;
+        return "127.0.0.1";
     }
 
     public static void sendToggleDrivePacket() {
         try {
-            Class<?> cpn = Class.forName("net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking");
-            Class<?> idClass = null;
-            try { idClass = Class.forName("net.minecraft.util.Identifier"); }
-            catch (Throwable e) { idClass = Class.forName("net.minecraft.class_2960"); }
-            Object channelId = idClass.getConstructor(String.class, String.class).newInstance("figuralink", "toggle_drive");
-
-            Class<?> pbb = Class.forName("net.fabricmc.fabric.api.networking.v1.PacketByteBufs");
-            Object buf = pbb.getMethod("create").invoke(null);
-
-            for (Method m : cpn.getMethods()) {
-                if ("send".equals(m.getName()) && m.getParameterCount() == 2) {
-                    m.invoke(null, channelId, buf);
-                    FiguraLink.LOGGER.debug("[FiguraLimit] Sent toggle_drive packet to server.");
-                    return;
-                }
-            }
+            Object buf = FiguraPacketUtil.createBuf();
+            FiguraPacketUtil.sendC2S("toggle_drive", buf);
+            FiguraLink.LOGGER.debug("[FiguraLimit] Sent toggle_drive packet to server.");
         } catch (Throwable t) {
             FiguraLink.LOGGER.warn("[FiguraLimit] Could not send toggle_drive packet: " + t.getMessage());
         }
