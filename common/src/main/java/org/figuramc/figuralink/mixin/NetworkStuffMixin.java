@@ -1,6 +1,5 @@
 package org.figuramc.figuralink.mixin;
 
-import org.figuramc.figuralink.FiguraLink;
 import org.figuramc.figuralink.config.FiguraLinkConfig;
 import org.figuramc.figuralink.util.FiguraLinkUtil;
 import org.spongepowered.asm.mixin.Mixin;

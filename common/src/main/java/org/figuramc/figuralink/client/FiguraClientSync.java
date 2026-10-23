@@ -10,7 +10,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
-import java.net.SocketAddress;
+import java.net.URI;
 import java.net.URL;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -292,7 +292,7 @@ public class FiguraClientSync {
             int[] portsToTest = new int[]{currentPort, 7070, 25566, 25565};
             for (int port : portsToTest) {
                 try {
-                    URL url = new URL("http://" + remoteHost + ":" + port + "/version");
+                    URL url = URI.create("http://" + remoteHost + ":" + port + "/version").toURL();
                     HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                     conn.setConnectTimeout(1500);
                     conn.setReadTimeout(1500);
@@ -619,7 +619,7 @@ public class FiguraClientSync {
 
     private static String fetchEquippedHashFromBackend(String baseUrl, UUID playerUuid) {
         try {
-            URL url = new URL(baseUrl + "/" + playerUuid.toString());
+            URL url = URI.create(baseUrl + "/" + playerUuid.toString()).toURL();
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
             conn.setConnectTimeout(1500);

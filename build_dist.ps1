@@ -88,9 +88,13 @@ $instances = @(
 
 foreach ($inst in $instances) {
     if (Test-Path $inst) {
-        Get-ChildItem -Path $inst -Filter "figuralink-*.jar" | Remove-Item -Force
-        Copy-Item (Join-Path $distDir "figuralink-fabric-1.20.1-1.1.7.jar") $inst
-        Write-Host "Deployed figuralink-fabric-1.20.1-1.1.7.jar to $inst"
+        try {
+            Get-ChildItem -Path $inst -Filter "figuralink-*.jar" | Remove-Item -Force
+            Copy-Item (Join-Path $distDir "figuralink-fabric-1.20.1-1.1.7.jar") $inst
+            Write-Host "Deployed figuralink-fabric-1.20.1-1.1.7.jar to $inst"
+        } catch {
+            Write-Warning "Could not update $inst (Minecraft might be running): $_"
+        }
     }
 }
 
