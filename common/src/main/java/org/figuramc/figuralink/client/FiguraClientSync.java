@@ -388,7 +388,7 @@ public class FiguraClientSync {
         return false;
     }
 
-    private static Object getMinecraftClientInstance() {
+    public static Object getMinecraftClientInstance() {
         for (String cName : new String[]{"net.minecraft.client.MinecraftClient", "net.minecraft.class_310"}) {
             try {
                 Class<?> clazz = Class.forName(cName);
@@ -717,5 +717,28 @@ public class FiguraClientSync {
             }
         } catch (Throwable ignored) {}
         return list;
+    }
+
+    public static void sendToggleDrivePacket() {
+        try {
+            Class<?> cpn = Class.forName("net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking");
+            Class<?> idClass = null;
+            try { idClass = Class.forName("net.minecraft.util.Identifier"); }
+            catch (Throwable e) { idClass = Class.forName("net.minecraft.class_2960"); }
+            Object channelId = idClass.getConstructor(String.class, String.class).newInstance("figuralink", "toggle_drive");
+
+            Class<?> pbb = Class.forName("net.fabricmc.fabric.api.networking.v1.PacketByteBufs");
+            Object buf = pbb.getMethod("create").invoke(null);
+
+            for (Method m : cpn.getMethods()) {
+                if ("send".equals(m.getName()) && m.getParameterCount() == 2) {
+                    m.invoke(null, channelId, buf);
+                    FiguraLink.LOGGER.debug("[FiguraLimit] Sent toggle_drive packet to server.");
+                    return;
+                }
+            }
+        } catch (Throwable t) {
+            FiguraLink.LOGGER.warn("[FiguraLimit] Could not send toggle_drive packet: " + t.getMessage());
+        }
     }
 }

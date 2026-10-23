@@ -24,11 +24,17 @@ public class FiguraLink {
                 FiguraLinkConfig.getTotalStorageLimit() / (1024L * 1024L * 1024L));
 
         if (!FiguraLinkConfig.isClientEnvironment()) {
-            EmbeddedFiguraServer.start(FiguraLinkConfig.getBackendPort());
+            int port = FiguraLinkConfig.getBackendPort();
+            if (port > 0) {
+                EmbeddedFiguraServer.start(port);
+            } else {
+                LOGGER.warn("[FiguraLimit] backend-port is set to 0. Embedded Figura backend is DISABLED until configured in config/figura-limit.properties!");
+            }
             FiguraServerSync.init();
         } else {
             // Start local backend on client for singleplayer & offline fallback
-            EmbeddedFiguraServer.start(FiguraLinkConfig.getBackendPort());
+            int localPort = FiguraLinkConfig.getBackendPort() > 0 ? FiguraLinkConfig.getBackendPort() : 30007;
+            EmbeddedFiguraServer.start(localPort);
             FiguraClientSync.init();
         }
     }

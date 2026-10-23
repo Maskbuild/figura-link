@@ -5,8 +5,10 @@ import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.builder.RequiredArgumentBuilder;
 import org.figuramc.figuralink.client.FiguraClientSync;
 import org.figuramc.figuralink.config.FiguraLinkConfig;
+import org.figuramc.figuralink.server.FiguraDriveBossBar;
 
 import java.lang.reflect.Method;
+import java.util.UUID;
 import java.util.function.Supplier;
 
 public class FiguraLimitCommand {
@@ -50,6 +52,98 @@ public class FiguraLimitCommand {
                 })
             )
         );
+
+        // 3. /figura drive (toggle storage BossBar, OP only)
+        root.then(LiteralArgumentBuilder.literal("drive")
+            .requires(FiguraLimitCommand::isOp)
+            .executes(context -> {
+                Object source = context.getSource();
+                if (!isOp(source)) {
+                    sendFeedback(source, "§cYou do not have permission to use this command.");
+                    return 0;
+                }
+                handleDrive(source);
+                return 1;
+            })
+        );
+    }
+
+    private static void handleDrive(Object source) {
+        if (source == null) return;
+
+        // 1. Check if source is a ServerCommandSource with a player
+        Object serverPlayer = null;
+        for (String mName : new String[]{"getPlayer", "method_9207"}) {
+            try {
+                Method m = source.getClass().getMethod(mName);
+                Object p = m.invoke(source);
+                if (p != null) {
+                    serverPlayer = p;
+                    break;
+                }
+            } catch (Throwable ignored) {}
+        }
+
+        if (serverPlayer != null) {
+            FiguraDriveBossBar.togglePlayer(serverPlayer, source);
+            return;
+        }
+
+        // 2. Check if source is server console
+        if (source.getClass().getName().contains("ServerCommandSource") || source.getClass().getName().contains("class_2168")) {
+            FiguraDriveBossBar.printConsoleStats(source);
+            return;
+        }
+
+        // 3. Client environment
+        if (FiguraClientSync.isSingleplayer()) {
+            try {
+                Object mc = FiguraClientSync.getMinecraftClientInstance();
+                if (mc != null) {
+                    Object server = null;
+                    for (String mName : new String[]{"getServer", "method_1576"}) {
+                        try {
+                            server = mc.getClass().getMethod(mName).invoke(mc);
+                            if (server != null) break;
+                        } catch (Throwable ignored) {}
+                    }
+                    if (server != null) {
+                        Object pm = null;
+                        for (Method m : server.getClass().getMethods()) {
+                            if (m.getParameterCount() == 0 && (
+                                m.getReturnType().getName().contains("PlayerManager") || 
+                                m.getReturnType().getName().endsWith("class_3324"))) {
+                                pm = m.invoke(server);
+                                break;
+                            }
+                        }
+                        if (pm != null) {
+                            UUID localUuid = null;
+                            try {
+                                Class<?> fm = Class.forName("org.figuramc.figura.FiguraMod");
+                                Object u = fm.getMethod("getLocalPlayerUUID").invoke(null);
+                                if (u instanceof UUID) localUuid = (UUID) u;
+                            } catch (Throwable ignored) {}
+
+                            if (localUuid != null) {
+                                for (String mName : new String[]{"getPlayer", "method_14602"}) {
+                                    try {
+                                        Object p = pm.getClass().getMethod(mName, UUID.class).invoke(pm, localUuid);
+                                        if (p != null) {
+                                            FiguraDriveBossBar.togglePlayer(p, source);
+                                            return;
+                                        }
+                                    } catch (Throwable ignored) {}
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {}
+        }
+
+        // In multiplayer client: send packet to server
+        FiguraClientSync.sendToggleDrivePacket();
     }
 
     public static boolean checkConnected() {

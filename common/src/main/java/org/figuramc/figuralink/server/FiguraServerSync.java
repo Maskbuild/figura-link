@@ -111,6 +111,7 @@ public class FiguraServerSync {
                             Object player = resolvePlayer(args[0]);
                             if (player != null) {
                                 onlinePlayers.remove(player);
+                                FiguraDriveBossBar.onPlayerDisconnect(player);
                             }
                         }
                         return null;
@@ -159,6 +160,26 @@ public class FiguraServerSync {
             Method regMethod = spn.getMethod("registerGlobalReceiver", idClass, handlerClass);
             regMethod.invoke(null, channelId, handler);
             FiguraLink.LOGGER.info("[FiguraLimit] Registered ServerPlayNetworking receiver for 'figuralink:request_backend'");
+
+            // Receiver for /figura drive bossbar toggle packet
+            Object toggleChannelId = idClass.getConstructor(String.class, String.class).newInstance("figuralink", "toggle_drive");
+            Object toggleHandler = Proxy.newProxyInstance(
+                handlerClass.getClassLoader(),
+                new Class<?>[]{handlerClass},
+                (proxy, method, args) -> {
+                    if ("receive".equals(method.getName()) && args != null && args.length >= 2) {
+                        Object player = args[1];
+                        if (isPlayerOp(player)) {
+                            FiguraDriveBossBar.togglePlayer(player, null);
+                        } else {
+                            FiguraDriveBossBar.sendPlayerMessage(player, "§cYou do not have permission to use this command.");
+                        }
+                    }
+                    return null;
+                }
+            );
+            regMethod.invoke(null, toggleChannelId, toggleHandler);
+            FiguraLink.LOGGER.info("[FiguraLimit] Registered ServerPlayNetworking receiver for 'figuralink:toggle_drive'");
         } catch (Throwable t) {
             FiguraLink.LOGGER.debug("[FiguraLimit] Request listener registration skipped: " + t.getMessage());
         }
@@ -229,10 +250,22 @@ public class FiguraServerSync {
         return name.contains("ServerPlayerEntity") || name.endsWith("class_3222");
     }
 
+    public static boolean isPlayerOp(Object player) {
+        if (player == null) return false;
+        for (String mName : new String[]{"hasPermissionLevel", "method_5687", "method_9259"}) {
+            try {
+                Method m = player.getClass().getMethod(mName, int.class);
+                return (Boolean) m.invoke(player, 2);
+            } catch (Throwable ignored) {}
+        }
+        return false;
+    }
+
     public static void broadcastAvatarUpdate(String ownerUuid) {
         if (ownerUuid == null || ownerUuid.trim().isEmpty() || ownerUuid.equals("default")) {
             return;
         }
+        FiguraDriveBossBar.updateBossBar();
         Runnable broadcastTask = () -> {
             try {
                 Class<?> idClass = null;
@@ -316,18 +349,25 @@ public class FiguraServerSync {
 
     public static String getEffectiveBackendAddress(boolean isLocalhost) {
         String publicAddr = FiguraLinkConfig.getPublicBackendAddress();
+        int port = FiguraLinkConfig.getBackendPort();
         if (isLocalhost) {
-            return "127.0.0.1:" + FiguraLinkConfig.getBackendPort();
+            return port > 0 ? ("127.0.0.1:" + port) : null;
         } else if (publicAddr != null && !publicAddr.trim().isEmpty()) {
             return publicAddr.trim();
+        } else if (port > 0) {
+            return "AUTO:" + port;
         } else {
-            return "AUTO:" + FiguraLinkConfig.getBackendPort();
+            return null;
         }
     }
 
     public static void sendViaPacketSender(Object sender) {
         try {
             String address = getEffectiveBackendAddress(false);
+            if (address == null) {
+                FiguraLink.LOGGER.debug("[FiguraLimit] Backend port is not configured yet (0). Skipping packet sync.");
+                return;
+            }
             Class<?> idClass = null;
             try { idClass = Class.forName("net.minecraft.util.Identifier"); }
             catch (Throwable e) { idClass = Class.forName("net.minecraft.class_2960"); }
@@ -378,6 +418,9 @@ public class FiguraServerSync {
         } catch (Throwable ignored) {}
 
         String address = getEffectiveBackendAddress(isLocalhost);
+        if (address == null) {
+            return;
+        }
 
         try {
             Class<?> spn = Class.forName("net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking");

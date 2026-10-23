@@ -12,8 +12,8 @@ import java.util.stream.Stream;
 public class FiguraLinkConfig {
     private static final String CONFIG_FILENAME = "figura-limit.properties";
     
-    // Default 30007
-    private static int backendPort = 30007;
+    // Default 0 (disabled until configured by user/server owner)
+    private static int backendPort = 0;
     // Public backend address for playit.gg or tunnel services
     private static String publicBackendAddress = "";
     // Default 5 MB
@@ -75,7 +75,7 @@ public class FiguraLinkConfig {
         if (Files.exists(configPath)) {
             try (InputStream in = Files.newInputStream(configPath)) {
                 props.load(in);
-                String portStr = props.getProperty("backend-port", "30007").trim();
+                String portStr = props.getProperty("backend-port", "0").trim();
                 publicBackendAddress = props.getProperty("public-backend-address", "").trim();
                 String sizeStr = props.getProperty("max-avatar-size", "5MB").trim();
                 String storageStr = props.getProperty("total-storage-limit", "50GB").trim();
@@ -83,7 +83,7 @@ public class FiguraLinkConfig {
                 try {
                     backendPort = Integer.parseInt(portStr);
                 } catch (Exception ignored) {
-                    backendPort = 30007;
+                    backendPort = 0;
                 }
                 maxAvatarSize = (int) parseBytes(sizeStr, 5 * 1024 * 1024);
                 totalStorageLimit = parseBytes(storageStr, 50L * 1024L * 1024L * 1024L);
@@ -126,7 +126,8 @@ public class FiguraLinkConfig {
                     # Figura Limit Unlocked Configuration
                     # ========================================================
                     # Port for the embedded Figura backend server
-                    backend-port=30007
+                    # Default is 0. Please specify your desired port (e.g. 30007, 7070, 25566)
+                    backend-port=0
 
                     # Optional: Public address for tunnel services (e.g. playit.gg, ngrok)
                     # If left empty, clients will automatically connect to this server's IP and backend-port.
