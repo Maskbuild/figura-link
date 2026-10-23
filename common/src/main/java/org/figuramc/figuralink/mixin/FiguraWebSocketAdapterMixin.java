@@ -4,7 +4,6 @@ import org.figuramc.figuralink.util.FiguraLinkUtil;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(targets = "org.figuramc.figura.backend2.websocket.FiguraWebSocketAdapter", remap = false)
@@ -19,15 +18,9 @@ public class FiguraWebSocketAdapterMixin {
                 while (clean.endsWith("/")) {
                     clean = clean.substring(0, clean.length() - 1);
                 }
-                cir.setReturnValue("ws://" + clean + "/ws");
+                String scheme = (address.startsWith("https://") || address.startsWith("wss://")) ? "wss://" : "ws://";
+                cir.setReturnValue(scheme + clean + "/ws");
             }
-        }
-    }
-
-    @Inject(method = "handleClose", at = @At("HEAD"), cancellable = true)
-    private void onHandleClose(int code, String reason, CallbackInfo ci) {
-        if (FiguraLinkUtil.isCustomBackend()) {
-            ci.cancel();
         }
     }
 }

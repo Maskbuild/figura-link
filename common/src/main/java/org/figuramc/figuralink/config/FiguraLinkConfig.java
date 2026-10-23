@@ -7,34 +7,33 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Properties;
-import java.util.stream.Stream;
 
 public class FiguraLinkConfig {
     private static final String CONFIG_FILENAME = "figura-limit.properties";
     
-    // Default 0 (disabled until configured by user/server owner)
-    private static int backendPort = 0;
-    // Public backend address for playit.gg or tunnel services
-    private static String publicBackendAddress = "";
+    // Address sent to joining players (e.g. "127.0.0.1:8080" or "backend.myserver.com:8080")
+    private static String backendAddress = "";
+    // Full URL to backend HTTP API for presence reporting (e.g. "http://127.0.0.1:8080")
+    private static String backendUrl = "";
+    // Server secret for authenticating with the Fastify backend dashboard
+    private static String serverSecret = "";
     // Default 5 MB
     private static int maxAvatarSize = 5 * 1024 * 1024;
-    // Default 50 GB
-    private static long totalStorageLimit = 50L * 1024L * 1024L * 1024L;
 
-    public static int getBackendPort() {
-        return backendPort;
+    public static String getBackendAddress() {
+        return backendAddress;
     }
 
-    public static String getPublicBackendAddress() {
-        return publicBackendAddress;
+    public static String getBackendUrl() {
+        return backendUrl;
+    }
+
+    public static String getServerSecret() {
+        return serverSecret;
     }
 
     public static int getMaxAvatarSize() {
         return maxAvatarSize;
-    }
-
-    public static long getTotalStorageLimit() {
-        return totalStorageLimit;
     }
 
     public static boolean isClientEnvironment() {
@@ -75,18 +74,17 @@ public class FiguraLinkConfig {
         if (Files.exists(configPath)) {
             try (InputStream in = Files.newInputStream(configPath)) {
                 props.load(in);
-                String portStr = props.getProperty("backend-port", "0").trim();
-                publicBackendAddress = props.getProperty("public-backend-address", "").trim();
-                String sizeStr = props.getProperty("max-avatar-size", "5MB").trim();
-                String storageStr = props.getProperty("total-storage-limit", "50GB").trim();
-
-                try {
-                    backendPort = Integer.parseInt(portStr);
-                } catch (Exception ignored) {
-                    backendPort = 0;
+                backendAddress = props.getProperty("backend-address", "").trim();
+                if (backendAddress.isEmpty()) {
+                    backendAddress = props.getProperty("public-backend-address", "").trim();
                 }
+                backendUrl = props.getProperty("backend-url", "").trim();
+                serverSecret = props.getProperty("server-secret", "").trim();
+                String sizeStr = props.getProperty("max-avatar-size", "5MB").trim();
+
                 maxAvatarSize = (int) parseBytes(sizeStr, 5 * 1024 * 1024);
-                totalStorageLimit = parseBytes(storageStr, 50L * 1024L * 1024L * 1024L);
+                FiguraLink.LOGGER.info("[FiguraLimit] Loaded config: backend-address='{}', max-avatar-size={} bytes", 
+                        backendAddress, maxAvatarSize);
                 return;
             } catch (Exception e) {
                 FiguraLink.LOGGER.error("[FiguraLimit] Failed to read " + CONFIG_FILENAME + ", using defaults.", e);
@@ -111,7 +109,6 @@ public class FiguraLinkConfig {
         if (Files.exists(inRoot)) {
             return inRoot;
         }
-        // Standard Minecraft server mod location: config/figura-limit.properties
         return inConfig;
     }
 
@@ -123,24 +120,25 @@ public class FiguraLinkConfig {
 
             String content = """
                     # ========================================================
-                    # Figura Limit Unlocked Configuration
+                    # Figura Limit Companion Mod Configuration
                     # ========================================================
-                    # Port for the embedded Figura backend server
-                    # Default is 0. Please specify your desired port (e.g. 30007, 7070, 25566)
-                    backend-port=0
+                    # The address of your standalone Figura Backend server
+                    # Clients connecting to this Minecraft server will automatically switch
+                    # their Figura Cloud to this backend address.
+                    # Example: backend-address=127.0.0.1:8080 or backend-address=figura.myhost.com:8080
+                    backend-address=
 
-                    # Optional: Public address for tunnel services (e.g. playit.gg, ngrok)
-                    # If left empty, clients will automatically connect to this server's IP and backend-port.
-                    # Example: public-backend-address=signaling-descriptive.tun.ply.gg:12345
-                    public-backend-address=
+                    # Optional: Standalone Backend URL for sending server presence (online players)
+                    # to the Admin Dashboard.
+                    # Example: backend-url=http://127.0.0.1:8080
+                    backend-url=
 
-                    # Maximum avatar file size allowed on this server
+                    # Optional: Server Secret matching your instance secret in the backend
+                    server-secret=
+
+                    # Maximum avatar file size allowed for client avatars
                     # Supports units like: 5MB, 10MB, 20MB, or raw bytes (e.g. 5242880)
                     max-avatar-size=5MB
-
-                    # Total storage limit for all avatars on this server
-                    # Supports units like: 50GB, 100GB, or raw bytes (e.g. 53687091200)
-                    total-storage-limit=50GB
                     """;
 
             Files.writeString(target, content);
@@ -178,24 +176,5 @@ public class FiguraLinkConfig {
         } catch (Exception e) {
             return fallback;
         }
-    }
-
-    public static boolean isTotalStorageExceeded(Path avatarsFolder) {
-        long totalBytes = org.figuramc.figuralink.server.EmbeddedFiguraServer.getMemoryTotalBytes();
-        if (avatarsFolder != null && Files.exists(avatarsFolder)) {
-            try (Stream<Path> stream = Files.walk(avatarsFolder)) {
-                totalBytes += stream
-                        .filter(Files::isRegularFile)
-                        .mapToLong(p -> {
-                            try {
-                                return Files.size(p);
-                            } catch (IOException e) {
-                                return 0L;
-                            }
-                        })
-                        .sum();
-            } catch (Exception ignored) {}
-        }
-        return totalBytes >= totalStorageLimit;
     }
 }

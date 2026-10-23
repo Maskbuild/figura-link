@@ -9,7 +9,6 @@
     "FiguraCommandsMixin",
     "HttpAPIMixin",
     "FiguraWebSocketAdapterMixin",
-    "AuthHandlerMixin",
     "WardrobeScreenMixin",
     "EntityUtilsMixin"
   ],

@@ -4,19 +4,16 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.builder.RequiredArgumentBuilder;
 import org.figuramc.figuralink.client.FiguraClientSync;
-import org.figuramc.figuralink.config.FiguraLinkConfig;
-import org.figuramc.figuralink.server.FiguraDriveBossBar;
-import org.figuramc.figuralink.server.FiguraServerSync;
+import org.figuramc.figuralink.util.FiguraLinkUtil;
 
 import java.lang.reflect.Method;
-import java.util.UUID;
 import java.util.function.Supplier;
 
 public class FiguraLimitCommand {
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     public static void registerSubcommand(LiteralArgumentBuilder root) {
-        // 1. /figura limit-test
+        // 1. /figura limit-test (OP / singleplayer check)
         root.then(LiteralArgumentBuilder.literal("limit-test")
             .requires(FiguraLimitCommand::isOp)
             .executes(context -> {
@@ -27,7 +24,7 @@ public class FiguraLimitCommand {
                 }
 
                 if (checkConnected()) {
-                    sendFeedback(source, "hello world");
+                    sendFeedback(source, "hello world (Figura backend connected)");
                 } else {
                     sendFeedback(source, "Figura backend not connected");
                 }
@@ -35,13 +32,12 @@ public class FiguraLimitCommand {
             })
         );
 
-        // 2. /figura link-server (manual trigger to link to server backend)
+        // 2. /figura link-server (manual trigger to switch or check backend address)
         root.then(LiteralArgumentBuilder.literal("link-server")
             .executes(context -> {
                 Object source = context.getSource();
-                FiguraClientSync.switchToServerBackend();
-                String current = org.figuramc.figuralink.util.FiguraLinkUtil.getServerIp();
-                sendFeedback(source, "[FiguraLimit] Requested backend address from server. Current backend: " + (current != null ? current : "official"));
+                String current = FiguraLinkUtil.getServerIp();
+                sendFeedback(source, "[FiguraLimit] Current Figura backend: " + (current != null ? current : "official"));
                 return 1;
             })
             .then(RequiredArgumentBuilder.argument("address", StringArgumentType.greedyString())
@@ -49,7 +45,6 @@ public class FiguraLimitCommand {
                     Object source = context.getSource();
                     String address = StringArgumentType.getString(context, "address").trim();
                     if (address.matches("^\\d+$")) {
-                        // User passed just a port number e.g. /figura link-server 27821
                         String host = FiguraClientSync.getRemoteServerHost();
                         if (host == null || host.isEmpty() || host.equals("127.0.0.1") || host.equals("localhost")) {
                             host = "127.0.0.1";
@@ -62,173 +57,79 @@ public class FiguraLimitCommand {
                 })
             )
         );
-
-        // 3. /figura drive (toggle storage BossBar, OP only)
-        root.then(LiteralArgumentBuilder.literal("drive")
-            .executes(context -> {
-                Object source = context.getSource();
-                handleDrive(source);
-                return 1;
-            })
-        );
     }
 
-    private static void handleDrive(Object source) {
-        if (source == null) return;
-
-        // 1. Check if source is a ServerCommandSource with a player
-        Object serverPlayer = null;
-        for (String mName : new String[]{"getPlayer", "method_9207", "method_44023", "getEntity", "method_9254"}) {
-            try {
-                Method m = source.getClass().getMethod(mName);
-                Object p = m.invoke(source);
-                if (p != null && (p.getClass().getName().contains("ServerPlayerEntity") || p.getClass().getName().endsWith("class_3222"))) {
-                    serverPlayer = p;
-                    break;
-                }
-            } catch (Throwable ignored) {}
-        }
-
-        if (serverPlayer != null) {
-            if (FiguraServerSync.isPlayerOp(serverPlayer)) {
-                FiguraDriveBossBar.togglePlayer(serverPlayer, source);
-            } else {
-                sendFeedback(source, "§cYou do not have permission to use this command.");
-            }
-            return;
-        }
-
-        // 2. Check if source is server console
-        if (source.getClass().getName().contains("ServerCommandSource") || source.getClass().getName().contains("class_2168")) {
-            FiguraDriveBossBar.printConsoleStats(source);
-            return;
-        }
-
-        // 3. Client environment
-        if (FiguraClientSync.isSingleplayer()) {
-            try {
-                Object mc = FiguraClientSync.getMinecraftClientInstance();
-                if (mc != null) {
-                    Object server = null;
-                    for (String mName : new String[]{"getServer", "method_1576"}) {
-                        try {
-                            server = mc.getClass().getMethod(mName).invoke(mc);
-                            if (server != null) break;
-                        } catch (Throwable ignored) {}
-                    }
-                    if (server != null) {
-                        Object pm = null;
-                        for (Method m : server.getClass().getMethods()) {
-                            if (m.getParameterCount() == 0 && (
-                                m.getReturnType().getName().contains("PlayerManager") || 
-                                m.getReturnType().getName().endsWith("class_3324"))) {
-                                pm = m.invoke(server);
-                                break;
-                            }
-                        }
-                        if (pm != null) {
-                            UUID localUuid = null;
-                            try {
-                                Class<?> fm = Class.forName("org.figuramc.figura.FiguraMod");
-                                Object u = fm.getMethod("getLocalPlayerUUID").invoke(null);
-                                if (u instanceof UUID) localUuid = (UUID) u;
-                            } catch (Throwable ignored) {}
-
-                            if (localUuid != null) {
-                                for (String mName : new String[]{"getPlayer", "method_14602"}) {
-                                    try {
-                                        Object p = pm.getClass().getMethod(mName, UUID.class).invoke(pm, localUuid);
-                                        if (p != null) {
-                                            FiguraDriveBossBar.togglePlayer(p, source);
-                                            return;
-                                        }
-                                    } catch (Throwable ignored) {}
-                                }
-                            }
-                        }
-                    }
-                }
-            } catch (Throwable ignored) {}
-        }
-
-        // In multiplayer client: send packet to server
-        FiguraClientSync.sendToggleDrivePacket();
-    }
-
-    public static boolean checkConnected() {
-        try {
-            Class<?> ns = Class.forName("org.figuramc.figura.backend2.NetworkStuff");
-            Method isConn = ns.getMethod("isConnected");
-            return (Boolean) isConn.invoke(null);
-        } catch (Throwable ignored) {
-            // On dedicated server where NetworkStuff is absent, mod itself is active on server
-            return true;
-        }
-    }
-
-    public static boolean isOp(Object source) {
+    private static boolean isOp(Object source) {
         if (source == null) return false;
-        try {
-            Method m = source.getClass().getMethod("hasPermissionLevel", int.class);
-            return (Boolean) m.invoke(source, 2);
-        } catch (Throwable ignored) {}
-        try {
-            Method m = source.getClass().getMethod("method_5687", int.class);
-            return (Boolean) m.invoke(source, 2);
-        } catch (Throwable ignored) {}
-        try {
-            Method m = source.getClass().getMethod("method_9259", int.class);
-            return (Boolean) m.invoke(source, 2);
-        } catch (Throwable ignored) {}
-        try {
-            Method getPlayer = source.getClass().getMethod("figura$getPlayer");
-            Object player = getPlayer.invoke(source);
-            if (player != null) {
-                return isOp(player);
-            }
-        } catch (Throwable ignored) {}
+        for (String mName : new String[]{"hasPermissionLevel", "method_9259"}) {
+            try {
+                Method m = source.getClass().getMethod(mName, int.class);
+                return (Boolean) m.invoke(source, 2);
+            } catch (Throwable ignored) {}
+        }
         return true;
     }
 
-    public static void sendFeedback(Object source, String message) {
+    private static boolean checkConnected() {
+        try {
+            Class<?> ns = Class.forName("org.figuramc.figura.backend2.NetworkStuff");
+            Method isConnected = ns.getMethod("isConnected");
+            return (Boolean) isConnected.invoke(null);
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void sendFeedback(Object source, String message) {
         if (source == null) return;
-        // 1. FiguraClientCommandSource: figura$sendFeedback
         try {
-            Class<?> textClass = Class.forName("net.minecraft.class_2561");
-            Method fb = source.getClass().getMethod("figura$sendFeedback", textClass);
-            Object text = Class.forName("org.figuramc.figura.utils.FiguraText").getMethod("of", String.class).invoke(null, message);
-            fb.invoke(source, text);
-            return;
-        } catch (Throwable ignored) {}
+            Class<?> textClass = null;
+            try { textClass = Class.forName("net.minecraft.text.Text"); }
+            catch (Throwable e) { textClass = Class.forName("net.minecraft.class_2561"); }
 
-        try {
-            Class<?> textClass = Class.forName("net.minecraft.text.Text");
-            Method fb = source.getClass().getMethod("figura$sendFeedback", textClass);
-            Object text = textClass.getMethod("literal", String.class).invoke(null, message);
-            fb.invoke(source, text);
-            return;
-        } catch (Throwable ignored) {}
-
-        // 2. ServerCommandSource: sendFeedback
-        for (Method m : source.getClass().getMethods()) {
-            if (m.getName().toLowerCase().contains("feedback") || m.getName().toLowerCase().contains("sendmessage")) {
-                if (m.getParameterCount() == 2 && m.getParameterTypes()[1] == boolean.class) {
-                    try {
-                        Class<?> textClass = Class.forName("net.minecraft.class_2561");
-                        Object text = textClass.getMethod("method_43470", String.class).invoke(null, message);
-                        Supplier<?> s = () -> text;
-                        m.invoke(source, s, false);
-                        return;
-                    } catch (Throwable ignored) {}
-                    try {
-                        Class<?> textClass = Class.forName("net.minecraft.text.Text");
-                        Object text = textClass.getMethod("literal", String.class).invoke(null, message);
-                        Supplier<?> s = () -> text;
-                        m.invoke(source, s, false);
-                        return;
-                    } catch (Throwable ignored) {}
+            Object text = null;
+            for (Method m : textClass.getMethods()) {
+                if ("literal".equals(m.getName()) && m.getParameterCount() == 1 && m.getParameterTypes()[0] == String.class) {
+                    text = m.invoke(null, message);
+                    break;
                 }
             }
-        }
+            if (text == null) {
+                for (Method m : textClass.getMethods()) {
+                    if ("of".equals(m.getName()) && m.getParameterCount() == 1 && m.getParameterTypes()[0] == String.class) {
+                        text = m.invoke(null, message);
+                        break;
+                    }
+                }
+            }
+
+            if (text != null) {
+                for (Method m : source.getClass().getMethods()) {
+                    if (m.getName().toLowerCase().contains("feedback")) {
+                        if (m.getParameterCount() == 2 && m.getParameterTypes()[1] == boolean.class) {
+                            if (m.getParameterTypes()[0].isAssignableFrom(text.getClass())) {
+                                m.invoke(source, text, false);
+                                return;
+                            } else if (m.getParameterTypes()[0] == Supplier.class) {
+                                final Object finalText = text;
+                                Supplier<?> s = () -> finalText;
+                                m.invoke(source, s, false);
+                                return;
+                            }
+                        }
+                    }
+                }
+                for (Method m : source.getClass().getMethods()) {
+                    if (m.getName().toLowerCase().contains("sendmessage")) {
+                        if (m.getParameterCount() == 2 && m.getParameterTypes()[1] == boolean.class) {
+                            if (m.getParameterTypes()[0].isAssignableFrom(text.getClass())) {
+                                m.invoke(source, text, false);
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
     }
 }

@@ -202,7 +202,7 @@ public class FiguraPacketUtil {
                 }
                 if (createC2S != null) {
                     Object packet = createC2S.invoke(null, channelId, buf);
-                    Object mc = FiguraClientSync.getMinecraftClientInstance();
+                    Object mc = getMinecraftClientInstance();
                     if (mc != null && packet != null) {
                         Object nh = null;
                         for (String mName : new String[]{"getNetworkHandler", "method_1562"}) {
@@ -280,5 +280,17 @@ public class FiguraPacketUtil {
         } catch (Throwable t) {
             FiguraLink.LOGGER.debug("[FiguraLimit] sendS2C error for '{}': {}", channelName, t.getMessage());
         }
+    }
+
+    public static Object getMinecraftClientInstance() {
+        try {
+            Class<?> mcClass = Class.forName("net.minecraft.client.MinecraftClient");
+            return mcClass.getMethod("getInstance").invoke(null);
+        } catch (Throwable ignored) {}
+        try {
+            Class<?> mcClass = Class.forName("net.minecraft.class_310");
+            return mcClass.getMethod("method_1551").invoke(null);
+        } catch (Throwable ignored) {}
+        return null;
     }
 }
