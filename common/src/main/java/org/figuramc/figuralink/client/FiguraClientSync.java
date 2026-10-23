@@ -134,6 +134,19 @@ public class FiguraClientSync {
                                 Method exec = mc.getClass().getMethod("execute", Runnable.class);
                                 exec.invoke(mc, (Runnable) () -> {
                                     try {
+                                        Class<?> fm = Class.forName("org.figuramc.figura.FiguraMod");
+                                        Object localUuid = fm.getMethod("getLocalPlayerUUID").invoke(null);
+                                        if (targetUUID.equals(localUuid)) {
+                                            Class<?> am = Class.forName("org.figuramc.figura.avatar.AvatarManager");
+                                            try {
+                                                Field lu = am.getDeclaredField("localUploaded");
+                                                lu.setAccessible(true);
+                                                lu.setBoolean(null, true);
+                                            } catch (Throwable ignored) {}
+                                            FiguraLink.LOGGER.info("[FiguraLimit] Avatar update packet is for local player: keeping local avatar.");
+                                            return;
+                                        }
+
                                         Class<?> am = Class.forName("org.figuramc.figura.avatar.AvatarManager");
                                         
                                         try {
@@ -142,20 +155,10 @@ public class FiguraClientSync {
                                         } catch (Throwable ignored) {}
 
                                         try {
-                                            Class<?> fm = Class.forName("org.figuramc.figura.FiguraMod");
-                                            Object localUuid = fm.getMethod("getLocalPlayerUUID").invoke(null);
-                                            if (targetUUID.equals(localUuid)) {
-                                                Field lu = am.getDeclaredField("localUploaded");
-                                                lu.setAccessible(true);
-                                                lu.setBoolean(null, true);
-                                            }
-                                        } catch (Throwable ignored) {}
-
-                                        try {
                                             Method fetchBackend = am.getDeclaredMethod("fetchBackend", UUID.class);
                                             fetchBackend.setAccessible(true);
                                             fetchBackend.invoke(null, targetUUID);
-                                            FiguraLink.LOGGER.info("[FiguraLimit] Successfully triggered fetchBackend for: {}", targetUUID);
+                                            FiguraLink.LOGGER.info("[FiguraLimit] Successfully triggered fetchBackend for remote player: {}", targetUUID);
                                         } catch (Throwable t) {
                                             try {
                                                 Method reload = am.getMethod("reloadAvatar", UUID.class);

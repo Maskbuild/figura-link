@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "figuralink",
-  "version": "1.1.6",
+  "version": "1.1.7",
   "name": "Figura Limit Unlocked",
   "description": "Companion mod unlocking avatar upload size limits on Figura servers",
   "authors": [

@@ -164,7 +164,7 @@ public class FiguraServerSync {
         }
     }
 
-    public static java.util.Collection<?> getAllServerPlayers() {
+    public static java.util.Collection<Object> getAllServerPlayers() {
         Set<Object> players = ConcurrentHashMap.newKeySet();
         if (currentServer != null) {
             try {
@@ -178,13 +178,36 @@ public class FiguraServerSync {
                     }
                 }
                 if (pm != null) {
-                    for (Method m : pm.getClass().getMethods()) {
-                        if (m.getParameterCount() == 0 && java.util.List.class.isAssignableFrom(m.getReturnType())) {
-                            Object list = m.invoke(pm);
-                            if (list instanceof java.util.Collection) {
-                                players.addAll((java.util.Collection<?>) list);
-                                return players;
+                    Method getPlayerListMethod = null;
+                    for (String name : new String[]{"getPlayerList", "method_14571"}) {
+                        try {
+                            getPlayerListMethod = pm.getClass().getMethod(name);
+                            break;
+                        } catch (Throwable ignored) {}
+                    }
+                    if (getPlayerListMethod != null) {
+                        Object list = getPlayerListMethod.invoke(pm);
+                        if (list instanceof java.util.Collection) {
+                            for (Object item : (java.util.Collection<?>) list) {
+                                if (isServerPlayer(item)) {
+                                    players.add(item);
+                                }
                             }
+                        }
+                    }
+                    if (players.isEmpty()) {
+                        for (java.lang.reflect.Field f : pm.getClass().getDeclaredFields()) {
+                            try {
+                                f.setAccessible(true);
+                                Object val = f.get(pm);
+                                if (val instanceof java.util.Collection) {
+                                    for (Object item : (java.util.Collection<?>) val) {
+                                        if (isServerPlayer(item)) {
+                                            players.add(item);
+                                        }
+                                    }
+                                }
+                            } catch (Throwable ignored) {}
                         }
                     }
                 }
@@ -192,54 +215,75 @@ public class FiguraServerSync {
                 FiguraLink.LOGGER.debug("[FiguraLimit] Could not query server player list: " + t.getMessage());
             }
         }
-        players.addAll(onlinePlayers);
+        for (Object p : onlinePlayers) {
+            if (isServerPlayer(p)) {
+                players.add(p);
+            }
+        }
         return players;
+    }
+
+    private static boolean isServerPlayer(Object obj) {
+        if (obj == null) return false;
+        String name = obj.getClass().getName();
+        return name.contains("ServerPlayerEntity") || name.endsWith("class_3222");
     }
 
     public static void broadcastAvatarUpdate(String ownerUuid) {
         if (ownerUuid == null || ownerUuid.trim().isEmpty() || ownerUuid.equals("default")) {
             return;
         }
-        try {
-            Class<?> idClass = null;
-            try { idClass = Class.forName("net.minecraft.util.Identifier"); }
-            catch (Throwable e) { idClass = Class.forName("net.minecraft.class_2960"); }
-            Object channelId = idClass.getConstructor(String.class, String.class).newInstance("figuralink", "avatar_update");
+        Runnable broadcastTask = () -> {
+            try {
+                Class<?> idClass = null;
+                try { idClass = Class.forName("net.minecraft.util.Identifier"); }
+                catch (Throwable e) { idClass = Class.forName("net.minecraft.class_2960"); }
+                Object channelId = idClass.getConstructor(String.class, String.class).newInstance("figuralink", "avatar_update");
 
-            Class<?> pbb = Class.forName("net.fabricmc.fabric.api.networking.v1.PacketByteBufs");
-            Class<?> spn = Class.forName("net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking");
-            Method sendMethod = null;
-            for (Method m : spn.getMethods()) {
-                if ("send".equals(m.getName()) && m.getParameterCount() == 3) {
-                    sendMethod = m;
-                    break;
-                }
-            }
-
-            java.util.Collection<?> recipients = getAllServerPlayers();
-            FiguraLink.LOGGER.info("[FiguraLimit] Broadcasting avatar update for '{}' to {} players...", ownerUuid, recipients.size());
-
-            if (sendMethod != null) {
-                int sent = 0;
-                for (Object player : recipients) {
-                    try {
-                        Object buf = pbb.getMethod("create").invoke(null);
-                        try {
-                            buf.getClass().getMethod("writeString", String.class).invoke(buf, ownerUuid.trim());
-                        } catch (Throwable t) {
-                            buf.getClass().getMethod("method_10814", String.class).invoke(buf, ownerUuid.trim());
-                        }
-                        sendMethod.invoke(null, player, channelId, buf);
-                        sent++;
-                    } catch (Throwable t) {
-                        FiguraLink.LOGGER.warn("[FiguraLimit] Could not send avatar update packet to a player: " + t.getMessage());
+                Class<?> pbb = Class.forName("net.fabricmc.fabric.api.networking.v1.PacketByteBufs");
+                Class<?> spn = Class.forName("net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking");
+                Method sendMethod = null;
+                for (Method m : spn.getMethods()) {
+                    if ("send".equals(m.getName()) && m.getParameterCount() == 3) {
+                        sendMethod = m;
+                        break;
                     }
                 }
-                FiguraLink.LOGGER.info("[FiguraLimit] Successfully broadcasted avatar update for '{}' to {} players.", ownerUuid, sent);
+
+                java.util.Collection<Object> recipients = getAllServerPlayers();
+                FiguraLink.LOGGER.info("[FiguraLimit] Broadcasting avatar update for '{}' to {} players...", ownerUuid, recipients.size());
+
+                if (sendMethod != null) {
+                    int sent = 0;
+                    for (Object player : recipients) {
+                        try {
+                            Object buf = pbb.getMethod("create").invoke(null);
+                            try {
+                                buf.getClass().getMethod("writeString", String.class).invoke(buf, ownerUuid.trim());
+                            } catch (Throwable t) {
+                                buf.getClass().getMethod("method_10814", String.class).invoke(buf, ownerUuid.trim());
+                            }
+                            sendMethod.invoke(null, player, channelId, buf);
+                            sent++;
+                        } catch (Throwable t) {
+                            FiguraLink.LOGGER.warn("[FiguraLimit] Could not send avatar update packet to a player: " + t.getMessage());
+                        }
+                    }
+                    FiguraLink.LOGGER.info("[FiguraLimit] Successfully broadcasted avatar update for '{}' to {} players.", ownerUuid, sent);
+                }
+            } catch (Throwable t) {
+                FiguraLink.LOGGER.warn("[FiguraLimit] Could not broadcast avatar update: " + t.getMessage());
             }
-        } catch (Throwable t) {
-            FiguraLink.LOGGER.warn("[FiguraLimit] Could not broadcast avatar update: " + t.getMessage());
+        };
+
+        if (currentServer != null) {
+            try {
+                Method execute = currentServer.getClass().getMethod("execute", Runnable.class);
+                execute.invoke(currentServer, broadcastTask);
+                return;
+            } catch (Throwable ignored) {}
         }
+        broadcastTask.run();
     }
 
     private static Object resolvePlayer(Object handler) {

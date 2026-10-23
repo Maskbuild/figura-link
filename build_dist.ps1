@@ -58,9 +58,9 @@ function New-ModJar {
         $manifestContent = @"
 Manifest-Version: 1.0
 Implementation-Title: Figura Limit Unlocked
-Implementation-Version: 1.1.6
+Implementation-Version: 1.1.7
 Specification-Title: figuralink
-Specification-Version: 1.1.6
+Specification-Version: 1.1.7
 MixinConfigs: figuralink.mixins.json
 "@
         Set-Content -Path "$staging\META-INF\MANIFEST.MF" -Value $manifestContent
@@ -72,10 +72,25 @@ MixinConfigs: figuralink.mixins.json
 }
 
 # Build loaders and versions
-New-ModJar "figuralink-fabric-1.20.1-1.1.6.jar" "fabric" "1.20.1"
-New-ModJar "figuralink-fabric-1.21.1-1.1.6.jar" "fabric" "1.21.1"
-New-ModJar "figuralink-forge-1.20.1-1.1.6.jar" "forge" "1.20.1"
-New-ModJar "figuralink-forge-1.21.1-1.1.6.jar" "forge" "1.21.1"
-New-ModJar "figuralink-universal-1.1.6.jar" "universal" "all"
+New-ModJar "figuralink-fabric-1.20.1-1.1.7.jar" "fabric" "1.20.1"
+New-ModJar "figuralink-fabric-1.21.1-1.1.7.jar" "fabric" "1.21.1"
+New-ModJar "figuralink-forge-1.20.1-1.1.7.jar" "forge" "1.20.1"
+New-ModJar "figuralink-forge-1.21.1-1.1.7.jar" "forge" "1.21.1"
+New-ModJar "figuralink-universal-1.1.7.jar" "universal" "all"
 
 Write-Host "`nAll mod jars successfully generated in dist\"
+
+# Auto deploy to PrismLauncher test instances
+$instances = @(
+    "C:\Users\catiswin\AppData\Roaming\PrismLauncher\instances\Skin\minecraft\mods",
+    "C:\Users\catiswin\AppData\Roaming\PrismLauncher\instances\Skin2\minecraft\mods"
+)
+
+foreach ($inst in $instances) {
+    if (Test-Path $inst) {
+        Get-ChildItem -Path $inst -Filter "figuralink-*.jar" | Remove-Item -Force
+        Copy-Item (Join-Path $distDir "figuralink-fabric-1.20.1-1.1.7.jar") $inst
+        Write-Host "Deployed figuralink-fabric-1.20.1-1.1.7.jar to $inst"
+    }
+}
+
