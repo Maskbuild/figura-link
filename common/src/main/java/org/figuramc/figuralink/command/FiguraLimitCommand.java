@@ -6,6 +6,7 @@ import com.mojang.brigadier.builder.RequiredArgumentBuilder;
 import org.figuramc.figuralink.client.FiguraClientSync;
 import org.figuramc.figuralink.config.FiguraLinkConfig;
 import org.figuramc.figuralink.server.FiguraDriveBossBar;
+import org.figuramc.figuralink.server.FiguraServerSync;
 
 import java.lang.reflect.Method;
 import java.util.UUID;
@@ -64,13 +65,8 @@ public class FiguraLimitCommand {
 
         // 3. /figura drive (toggle storage BossBar, OP only)
         root.then(LiteralArgumentBuilder.literal("drive")
-            .requires(FiguraLimitCommand::isOp)
             .executes(context -> {
                 Object source = context.getSource();
-                if (!isOp(source)) {
-                    sendFeedback(source, "§cYou do not have permission to use this command.");
-                    return 0;
-                }
                 handleDrive(source);
                 return 1;
             })
@@ -82,11 +78,11 @@ public class FiguraLimitCommand {
 
         // 1. Check if source is a ServerCommandSource with a player
         Object serverPlayer = null;
-        for (String mName : new String[]{"getPlayer", "method_9207"}) {
+        for (String mName : new String[]{"getPlayer", "method_9207", "method_44023", "getEntity", "method_9254"}) {
             try {
                 Method m = source.getClass().getMethod(mName);
                 Object p = m.invoke(source);
-                if (p != null) {
+                if (p != null && (p.getClass().getName().contains("ServerPlayerEntity") || p.getClass().getName().endsWith("class_3222"))) {
                     serverPlayer = p;
                     break;
                 }
@@ -94,7 +90,11 @@ public class FiguraLimitCommand {
         }
 
         if (serverPlayer != null) {
-            FiguraDriveBossBar.togglePlayer(serverPlayer, source);
+            if (FiguraServerSync.isPlayerOp(serverPlayer)) {
+                FiguraDriveBossBar.togglePlayer(serverPlayer, source);
+            } else {
+                sendFeedback(source, "§cYou do not have permission to use this command.");
+            }
             return;
         }
 

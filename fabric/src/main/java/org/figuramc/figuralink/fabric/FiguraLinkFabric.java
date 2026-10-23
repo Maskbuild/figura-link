@@ -21,25 +21,35 @@ public class FiguraLinkFabric implements ModInitializer {
         try {
             Class<?> cbClass = Class.forName("net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback");
             Object event = cbClass.getField("EVENT").get(null);
-            Method registerMethod = event.getClass().getMethod("register", Object.class);
 
-            Object handler = Proxy.newProxyInstance(
-                cbClass.getClassLoader(),
-                new Class<?>[]{cbClass},
-                (proxy, method, args) -> {
-                    if ("register".equals(method.getName()) && args != null && args.length >= 1) {
-                        CommandDispatcher dispatcher = (CommandDispatcher) args[0];
-                        LiteralArgumentBuilder root = LiteralArgumentBuilder.literal("figura");
-                        FiguraLimitCommand.registerSubcommand(root);
-                        dispatcher.register(root);
-                    }
-                    return null;
+            Class<?> eventClass = Class.forName("net.fabricmc.fabric.api.event.Event");
+            Method registerMethod = null;
+            for (Method m : eventClass.getMethods()) {
+                if ("register".equals(m.getName()) && m.getParameterCount() == 1) {
+                    registerMethod = m;
+                    break;
                 }
-            );
+            }
 
-            registerMethod.invoke(event, handler);
+            if (registerMethod != null) {
+                Object handler = Proxy.newProxyInstance(
+                    cbClass.getClassLoader(),
+                    new Class<?>[]{cbClass},
+                    (proxy, method, args) -> {
+                        if ("register".equals(method.getName()) && args != null && args.length >= 1) {
+                            CommandDispatcher dispatcher = (CommandDispatcher) args[0];
+                            LiteralArgumentBuilder root = LiteralArgumentBuilder.literal("figura");
+                            FiguraLimitCommand.registerSubcommand(root);
+                            dispatcher.register(root);
+                            FiguraLink.LOGGER.info("[FiguraLimit] Registered server command '/figura'");
+                        }
+                        return null;
+                    }
+                );
+                registerMethod.invoke(event, handler);
+            }
         } catch (Throwable t) {
-            FiguraLink.LOGGER.debug("[FiguraLimit] Server command registration skipped: " + t.getMessage());
+            FiguraLink.LOGGER.warn("[FiguraLimit] Server command registration error: " + t.getMessage());
         }
     }
 }

@@ -184,12 +184,22 @@ public class FiguraServerSync {
                 new Class<?>[]{handlerClass},
                 (proxy, method, args) -> {
                     if ("receive".equals(method.getName()) && args != null && args.length >= 2) {
-                        Object player = args[1];
-                        if (isPlayerOp(player)) {
-                            FiguraDriveBossBar.togglePlayer(player, null);
-                        } else {
-                            FiguraDriveBossBar.sendPlayerMessage(player, "§cYou do not have permission to use this command.");
+                        final Object player = args[1];
+                        Runnable task = () -> {
+                            if (isPlayerOp(player)) {
+                                FiguraDriveBossBar.togglePlayer(player, null);
+                            } else {
+                                FiguraDriveBossBar.sendPlayerMessage(player, "§cYou do not have permission to use this command.");
+                            }
+                        };
+                        if (currentServer != null) {
+                            try {
+                                Method exec = currentServer.getClass().getMethod("execute", Runnable.class);
+                                exec.invoke(currentServer, task);
+                                return null;
+                            } catch (Throwable ignored) {}
                         }
+                        task.run();
                     }
                     return null;
                 }
@@ -271,7 +281,40 @@ public class FiguraServerSync {
         for (String mName : new String[]{"hasPermissionLevel", "method_5687", "method_9259"}) {
             try {
                 Method m = player.getClass().getMethod(mName, int.class);
-                return (Boolean) m.invoke(player, 2);
+                boolean res = (Boolean) m.invoke(player, 2);
+                if (res) return true;
+            } catch (Throwable ignored) {}
+        }
+
+        if (currentServer != null) {
+            try {
+                Object pm = null;
+                for (Method m : currentServer.getClass().getMethods()) {
+                    if (m.getParameterCount() == 0 && (
+                        m.getReturnType().getName().contains("PlayerManager") || 
+                        m.getReturnType().getName().endsWith("class_3324"))) {
+                        pm = m.invoke(currentServer);
+                        break;
+                    }
+                }
+                if (pm != null) {
+                    Object profile = null;
+                    for (String mName : new String[]{"getGameProfile", "method_5678"}) {
+                        try {
+                            profile = player.getClass().getMethod(mName).invoke(player);
+                            if (profile != null) break;
+                        } catch (Throwable ignored) {}
+                    }
+                    if (profile != null) {
+                        for (String mName : new String[]{"isOperator", "method_14596"}) {
+                            try {
+                                Method isOpMethod = pm.getClass().getMethod(mName, profile.getClass());
+                                boolean res = (Boolean) isOpMethod.invoke(pm, profile);
+                                if (res) return true;
+                            } catch (Throwable ignored) {}
+                        }
+                    }
+                }
             } catch (Throwable ignored) {}
         }
         return false;
@@ -372,12 +415,10 @@ public class FiguraServerSync {
         return null;
     }
 
-    public static String getEffectiveBackendAddress(boolean isLocalhost) {
+    public static String getEffectiveBackendAddress() {
         String publicAddr = FiguraLinkConfig.getPublicBackendAddress();
         int port = FiguraLinkConfig.getBackendPort();
-        if (isLocalhost) {
-            return port > 0 ? ("127.0.0.1:" + port) : null;
-        } else if (publicAddr != null && !publicAddr.trim().isEmpty()) {
+        if (publicAddr != null && !publicAddr.trim().isEmpty()) {
             return publicAddr.trim();
         } else if (port > 0) {
             return "AUTO:" + port;
@@ -389,7 +430,7 @@ public class FiguraServerSync {
     public static void sendViaPacketSender(Object sender) {
         if (sender == null) return;
         try {
-            String address = getEffectiveBackendAddress(false);
+            String address = getEffectiveBackendAddress();
             if (address == null) {
                 FiguraLink.LOGGER.debug("[FiguraLimit] Backend port is not configured yet (0). Skipping packet sync.");
                 return;
@@ -443,30 +484,7 @@ public class FiguraServerSync {
 
     public static void sendBackendAddressToPlayer(Object serverPlayer) {
         if (serverPlayer == null) return;
-        boolean isLocalhost = false;
-        try {
-            for (java.lang.reflect.Field f : serverPlayer.getClass().getFields()) {
-                if (f.getName().equals("networkHandler") || f.getName().equals("field_13987")) {
-                    Object nh = f.get(serverPlayer);
-                    if (nh != null) {
-                        for (java.lang.reflect.Field cf : nh.getClass().getFields()) {
-                            if (cf.getName().equals("connection") || cf.getName().equals("field_14384")) {
-                                Object conn = cf.get(nh);
-                                if (conn != null) {
-                                    Method m = conn.getClass().getMethod("getAddress");
-                                    Object addr = m.invoke(conn);
-                                    if (addr != null && addr.toString().contains("127.0.0.1")) {
-                                        isLocalhost = true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        } catch (Throwable ignored) {}
-
-        String address = getEffectiveBackendAddress(isLocalhost);
+        String address = getEffectiveBackendAddress();
         if (address == null) {
             return;
         }

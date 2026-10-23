@@ -30,7 +30,10 @@ public class FiguraDriveBossBar {
 
     public static DriveStats getDriveStats() {
         DriveStats stats = new DriveStats();
-        Path avatarsDir = Paths.get("figura-avatars");
+        Path avatarsDir = Paths.get("figura", "avatars");
+        if (!Files.exists(avatarsDir)) {
+            avatarsDir = Paths.get("figura-avatars");
+        }
         if (Files.exists(avatarsDir)) {
             try (Stream<Path> stream = Files.walk(avatarsDir)) {
                 List<Path> files = stream.filter(Files::isRegularFile).toList();
@@ -66,6 +69,17 @@ public class FiguraDriveBossBar {
             return;
         }
 
+        if (FiguraServerSync.currentServer != null) {
+            try {
+                Method exec = FiguraServerSync.currentServer.getClass().getMethod("execute", Runnable.class);
+                exec.invoke(FiguraServerSync.currentServer, (Runnable) () -> doTogglePlayer(serverPlayer, optionalSource));
+                return;
+            } catch (Throwable ignored) {}
+        }
+        doTogglePlayer(serverPlayer, optionalSource);
+    }
+
+    private static synchronized void doTogglePlayer(Object serverPlayer, Object optionalSource) {
         UUID uuid = getPlayerUuid(serverPlayer);
         if (uuid == null) return;
 
@@ -94,18 +108,29 @@ public class FiguraDriveBossBar {
     public static synchronized void updateBossBar() {
         if (sharedBossBar == null || viewers.isEmpty()) return;
 
-        DriveStats stats = getDriveStats();
-        String formattedUsed = formatBytes(stats.totalBytes);
-        String formattedLimit = formatBytes(stats.totalLimit);
-        String title = String.format(Locale.ROOT, "§bFigura Drive: §e%d Avatars §7| §a%s §7/ §f%s §6(%.1f%%)",
-                stats.avatarCount, formattedUsed, formattedLimit, stats.percent);
+        Runnable updateTask = () -> {
+            DriveStats stats = getDriveStats();
+            String formattedUsed = formatBytes(stats.totalBytes);
+            String formattedLimit = formatBytes(stats.totalLimit);
+            String title = String.format(Locale.ROOT, "§bFigura Drive: §e%d Avatars §7| §a%s §7/ §f%s §6(%.1f%%)",
+                    stats.avatarCount, formattedUsed, formattedLimit, stats.percent);
 
-        float barPercent = (float) Math.max(0.0, Math.min(1.0, (double) stats.totalBytes / (double) Math.max(1L, stats.totalLimit)));
-        String colorName = stats.percent < 50.0 ? "GREEN" : (stats.percent < 80.0 ? "YELLOW" : "RED");
+            float barPercent = (float) Math.max(0.0, Math.min(1.0, (double) stats.totalBytes / (double) Math.max(1L, stats.totalLimit)));
+            String colorName = stats.percent < 50.0 ? "GREEN" : (stats.percent < 80.0 ? "YELLOW" : "RED");
 
-        setBossBarName(sharedBossBar, title);
-        setBossBarPercent(sharedBossBar, barPercent);
-        setBossBarColor(sharedBossBar, colorName);
+            setBossBarName(sharedBossBar, title);
+            setBossBarPercent(sharedBossBar, barPercent);
+            setBossBarColor(sharedBossBar, colorName);
+        };
+
+        if (FiguraServerSync.currentServer != null) {
+            try {
+                Method exec = FiguraServerSync.currentServer.getClass().getMethod("execute", Runnable.class);
+                exec.invoke(FiguraServerSync.currentServer, updateTask);
+                return;
+            } catch (Throwable ignored) {}
+        }
+        updateTask.run();
     }
 
     public static synchronized void onPlayerDisconnect(Object serverPlayer) {
@@ -332,10 +357,11 @@ public class FiguraDriveBossBar {
             try {
                 for (Method m : sharedBossBar.getClass().getMethods()) {
                     if (m.getName().equals(mName) && m.getParameterCount() == 1) {
-                        if (m.getParameterTypes()[0].isAssignableFrom(player.getClass())) {
+                        try {
                             m.invoke(sharedBossBar, player);
+                            FiguraLink.LOGGER.info("[FiguraLimit] Successfully added player to BossBar.");
                             return;
-                        }
+                        } catch (Throwable ignored) {}
                     }
                 }
             } catch (Throwable ignored) {}
@@ -348,10 +374,10 @@ public class FiguraDriveBossBar {
             try {
                 for (Method m : sharedBossBar.getClass().getMethods()) {
                     if (m.getName().equals(mName) && m.getParameterCount() == 1) {
-                        if (m.getParameterTypes()[0].isAssignableFrom(player.getClass())) {
+                        try {
                             m.invoke(sharedBossBar, player);
                             return;
-                        }
+                        } catch (Throwable ignored) {}
                     }
                 }
             } catch (Throwable ignored) {}

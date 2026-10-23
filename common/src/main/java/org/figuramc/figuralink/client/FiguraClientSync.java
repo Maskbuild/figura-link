@@ -18,6 +18,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class FiguraClientSync {
 
     public static final String OFFICIAL_FIGURA_IP = "figura.moonlight-devs.org";
+    public static volatile long lastSyncPacketTime = 0;
 
     public static void init() {
         if (!FiguraLinkConfig.isClientEnvironment()) {
@@ -57,8 +58,18 @@ public class FiguraClientSync {
 
                         if (address != null && !address.trim().isEmpty()) {
                             address = address.trim();
+                            lastSyncPacketTime = System.currentTimeMillis();
                             if (address.startsWith("AUTO:") || address.startsWith("127.0.0.1:") || address.startsWith("localhost:") || address.startsWith(":")) {
                                 String remoteHost = getRemoteServerHost();
+                                if (remoteHost == null || remoteHost.isEmpty() || remoteHost.equals("127.0.0.1") || remoteHost.equals("localhost")) {
+                                    for (int i = 0; i < 5; i++) {
+                                        try { Thread.sleep(200); } catch (InterruptedException ignored) {}
+                                        remoteHost = getRemoteServerHost();
+                                        if (remoteHost != null && !remoteHost.isEmpty() && !remoteHost.equals("127.0.0.1") && !remoteHost.equals("localhost")) {
+                                            break;
+                                        }
+                                    }
+                                }
                                 if (remoteHost != null && !remoteHost.isEmpty() && !remoteHost.equals("127.0.0.1") && !remoteHost.equals("localhost")) {
                                     int colon = address.lastIndexOf(':');
                                     String port = (colon != -1) ? address.substring(colon) : (":" + FiguraLinkConfig.getBackendPort());
@@ -267,12 +278,25 @@ public class FiguraClientSync {
 
             if (remoteHost != null && !remoteHost.isEmpty() && !remoteHost.equals("127.0.0.1") && !remoteHost.equals("localhost")) {
                 FiguraLink.LOGGER.info("[FiguraLimit] Joined remote server: {}. Requesting backend address from server...", remoteHost);
-                
+                long requestStartTime = System.currentTimeMillis();
+
                 // Request backend address packet from server (server responds with the exact port configured in figura-limit.properties)
                 requestBackendFromServer();
 
                 // If user specifically configured a non-standard port on client, probe it as fallback
                 probeBackendPorts(remoteHost);
+
+                // Wait up to 3.5 seconds to see if server sends sync packet
+                try {
+                    Thread.sleep(3500);
+                } catch (InterruptedException ignored) {}
+
+                // If after 3.5 seconds, no sync packet arrived:
+                // This means the server does NOT have FiguraLimit mod installed (e.g. Hypixel, vanilla, other servers)
+                if (lastSyncPacketTime < requestStartTime) {
+                    FiguraLink.LOGGER.info("[FiguraLimit] No response from {} (mod not on server): restoring official Figura backend.", remoteHost);
+                    restoreOfficialBackend();
+                }
                 return;
             }
 
