@@ -3,6 +3,7 @@ package org.figuramc.figuralink.server;
 import org.figuramc.figuralink.FiguraLink;
 import org.figuramc.figuralink.config.FiguraLinkConfig;
 
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.Set;
@@ -67,19 +68,28 @@ public class FiguraServerSync {
                             currentServer = args[2];
                         }
 
-                        // 1. Try PacketSender (args[1])
-                        if (args.length >= 2 && args[1] != null) {
-                            sendViaPacketSender(args[1]);
+                        final Object sender = (args.length >= 2) ? args[1] : null;
+                        final Object player = (args.length >= 1) ? resolvePlayer(args[0]) : null;
+
+                        if (player != null) {
+                            onlinePlayers.add(player);
                         }
 
-                        // 2. Also try ServerPlayerEntity (args[0])
-                        if (args.length >= 1 && args[0] != null) {
-                            Object player = resolvePlayer(args[0]);
-                            if (player != null) {
-                                onlinePlayers.add(player);
-                                sendBackendAddressToPlayer(player);
+                        // Schedule sync across multiple delays to guarantee client receipt
+                        new Thread(() -> {
+                            int[] delays = new int[]{0, 200, 600, 1200, 2500, 5000};
+                            for (int delay : delays) {
+                                if (delay > 0) {
+                                    try { Thread.sleep(delay); } catch (InterruptedException ignored) {}
+                                }
+                                if (sender != null) {
+                                    sendViaPacketSender(sender);
+                                }
+                                if (player != null) {
+                                    sendBackendAddressToPlayer(player);
+                                }
                             }
-                        }
+                        }, "FiguraLimit-JoinSyncSchedule").start();
                     }
                     return null;
                 }
@@ -142,15 +152,21 @@ public class FiguraServerSync {
                 (proxy, method, args) -> {
                     if ("receive".equals(method.getName()) && args != null) {
                         // args: (server, player, handler, buf, responseSender)
+                        Object player = (args.length >= 2) ? args[1] : null;
+                        Object sender = null;
                         for (Object arg : args) {
                             if (arg != null && arg.getClass().getName().contains("PacketSender")) {
-                                sendViaPacketSender(arg);
-                                return null;
+                                sender = arg;
+                                break;
                             }
                         }
-                        if (args.length >= 2 && args[1] != null) {
-                            onlinePlayers.add(args[1]);
-                            sendBackendAddressToPlayer(args[1]);
+
+                        if (sender != null) {
+                            sendViaPacketSender(sender);
+                        }
+                        if (player != null) {
+                            onlinePlayers.add(player);
+                            sendBackendAddressToPlayer(player);
                         }
                     }
                     return null;
@@ -321,12 +337,24 @@ public class FiguraServerSync {
 
     private static Object resolvePlayer(Object handler) {
         if (handler == null) return null;
-        try {
-            return handler.getClass().getMethod("getPlayer").invoke(handler);
-        } catch (Throwable ignored) {}
-        try {
-            return handler.getClass().getMethod("method_18784").invoke(handler);
-        } catch (Throwable ignored) {}
+        if (isServerPlayer(handler)) {
+            return handler;
+        }
+        for (String mName : new String[]{"getPlayer", "method_32311"}) {
+            try {
+                Method m = handler.getClass().getMethod(mName);
+                Object p = m.invoke(handler);
+                if (isServerPlayer(p)) return p;
+            } catch (Throwable ignored) {}
+        }
+        for (String fName : new String[]{"player", "field_14140"}) {
+            try {
+                Field f = handler.getClass().getDeclaredField(fName);
+                f.setAccessible(true);
+                Object p = f.get(handler);
+                if (isServerPlayer(p)) return p;
+            } catch (Throwable ignored) {}
+        }
 
         Class<?> curr = handler.getClass();
         while (curr != null && curr != Object.class) {
@@ -334,11 +362,8 @@ public class FiguraServerSync {
                 try {
                     f.setAccessible(true);
                     Object val = f.get(handler);
-                    if (val != null) {
-                        String name = val.getClass().getName();
-                        if (name.contains("ServerPlayerEntity") || name.endsWith("class_3222")) {
-                            return val;
-                        }
+                    if (isServerPlayer(val)) {
+                        return val;
                     }
                 } catch (Throwable ignored) {}
             }
@@ -362,6 +387,7 @@ public class FiguraServerSync {
     }
 
     public static void sendViaPacketSender(Object sender) {
+        if (sender == null) return;
         try {
             String address = getEffectiveBackendAddress(false);
             if (address == null) {
@@ -381,11 +407,33 @@ public class FiguraServerSync {
                 buf.getClass().getMethod("method_10814", String.class).invoke(buf, address);
             }
 
+            // 1. Try createPacket + sendPacket(packet)
+            for (Method m : sender.getClass().getMethods()) {
+                if ("createPacket".equals(m.getName()) && m.getParameterCount() == 2) {
+                    try {
+                        Object packet = m.invoke(sender, channelId, buf);
+                        if (packet != null) {
+                            for (Method sm : sender.getClass().getMethods()) {
+                                if ("sendPacket".equals(sm.getName()) && sm.getParameterCount() == 1) {
+                                    sm.invoke(sender, packet);
+                                    FiguraLink.LOGGER.info("[FiguraLimit] Sent backend address '{}' via PacketSender.createPacket+sendPacket.", address);
+                                    return;
+                                }
+                            }
+                        }
+                    } catch (Throwable ignored) {}
+                }
+            }
+
+            // 2. Try sendPacket(channelId, buf) matching parameter types
             for (Method m : sender.getClass().getMethods()) {
                 if ("sendPacket".equals(m.getName()) && m.getParameterCount() == 2) {
-                    m.invoke(sender, channelId, buf);
-                    FiguraLink.LOGGER.info("[FiguraLimit] Sent backend address '{}' via PacketSender.", address);
-                    return;
+                    Class<?>[] pt = m.getParameterTypes();
+                    if (pt[0].isAssignableFrom(channelId.getClass())) {
+                        m.invoke(sender, channelId, buf);
+                        FiguraLink.LOGGER.info("[FiguraLimit] Sent backend address '{}' via PacketSender(Identifier, Buf).", address);
+                        return;
+                    }
                 }
             }
         } catch (Throwable t) {
@@ -394,6 +442,7 @@ public class FiguraServerSync {
     }
 
     public static void sendBackendAddressToPlayer(Object serverPlayer) {
+        if (serverPlayer == null) return;
         boolean isLocalhost = false;
         try {
             for (java.lang.reflect.Field f : serverPlayer.getClass().getFields()) {
@@ -438,6 +487,52 @@ public class FiguraServerSync {
                 buf.getClass().getMethod("method_10814", String.class).invoke(buf, address);
             }
 
+            // 1. Try createS2CPacket and direct send via player's networkHandler
+            try {
+                Method createS2C = null;
+                for (Method m : spn.getMethods()) {
+                    if ("createS2CPacket".equals(m.getName()) && m.getParameterCount() == 2) {
+                        createS2C = m;
+                        break;
+                    }
+                }
+                if (createS2C != null) {
+                    Object packet = createS2C.invoke(null, channelId, buf);
+                    if (packet != null) {
+                        Object nh = null;
+                        for (String fName : new String[]{"networkHandler", "field_13987"}) {
+                            try {
+                                Field f = serverPlayer.getClass().getField(fName);
+                                nh = f.get(serverPlayer);
+                                if (nh != null) break;
+                            } catch (Throwable ignored) {}
+                        }
+                        if (nh != null) {
+                            for (String mName : new String[]{"sendPacket", "method_14364"}) {
+                                try {
+                                    Method m = nh.getClass().getMethod(mName, packet.getClass().getInterfaces()[0]);
+                                    m.invoke(nh, packet);
+                                    FiguraLink.LOGGER.info("[FiguraLimit] Sent backend address '{}' directly via networkHandler.", address);
+                                    return;
+                                } catch (Throwable ignored) {}
+                            }
+                            for (Method m : nh.getClass().getMethods()) {
+                                if (("sendPacket".equals(m.getName()) || "method_14364".equals(m.getName())) && m.getParameterCount() == 1) {
+                                    try {
+                                        m.invoke(nh, packet);
+                                        FiguraLink.LOGGER.info("[FiguraLimit] Sent backend address '{}' directly via networkHandler.{}.", address, m.getName());
+                                        return;
+                                    } catch (Throwable ignored) {}
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (Throwable t) {
+                FiguraLink.LOGGER.debug("[FiguraLimit] Direct packet send fallback: {}", t.getMessage());
+            }
+
+            // 2. Standard ServerPlayNetworking.send fallback
             for (Method m : spn.getMethods()) {
                 if ("send".equals(m.getName()) && m.getParameterCount() == 3) {
                     m.invoke(null, serverPlayer, channelId, buf);

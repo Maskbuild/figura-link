@@ -266,16 +266,12 @@ public class FiguraClientSync {
             }
 
             if (remoteHost != null && !remoteHost.isEmpty() && !remoteHost.equals("127.0.0.1") && !remoteHost.equals("localhost")) {
-                FiguraLink.LOGGER.info("[FiguraLimit] Joined remote server: {}. Auto-switching to server backend...", remoteHost);
+                FiguraLink.LOGGER.info("[FiguraLimit] Joined remote server: {}. Requesting backend address from server...", remoteHost);
                 
-                // Immediately switch to remoteHost:<backendPort>
-                String targetAddress = remoteHost + ":" + FiguraLinkConfig.getBackendPort();
-                setFiguraServerIp(targetAddress);
-
-                // Send request packet to server in case server has custom port / public tunnel
+                // Request backend address packet from server (server responds with the exact port configured in figura-limit.properties)
                 requestBackendFromServer();
 
-                // Also run background HTTP probe to discover active backend port if non-default
+                // If user specifically configured a non-standard port on client, probe it as fallback
                 probeBackendPorts(remoteHost);
                 return;
             }
@@ -289,8 +285,11 @@ public class FiguraClientSync {
     private static void probeBackendPorts(String remoteHost) {
         new Thread(() -> {
             int currentPort = FiguraLinkConfig.getBackendPort();
-            int[] portsToTest = new int[]{currentPort, 7070, 25566, 25565};
+            int[] portsToTest = (currentPort > 0 && currentPort != 30007) 
+                    ? new int[]{currentPort, 7070, 25566, 25565} 
+                    : new int[]{7070, 25566, 25565};
             for (int port : portsToTest) {
+                if (port <= 0) continue;
                 try {
                     URL url = URI.create("http://" + remoteHost + ":" + port + "/version").toURL();
                     HttpURLConnection conn = (HttpURLConnection) url.openConnection();
@@ -317,7 +316,7 @@ public class FiguraClientSync {
 
     public static void requestBackendFromServer() {
         new Thread(() -> {
-            for (int delay : new int[]{100, 600, 1500, 3000}) {
+            for (int delay : new int[]{50, 200, 500, 1200, 2500, 5000}) {
                 try {
                     Thread.sleep(delay);
                     Class<?> cpn = Class.forName("net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking");
@@ -564,7 +563,8 @@ public class FiguraClientSync {
                 try {
                     Thread.sleep(3000); // Check every 3 seconds
 
-                    if (!FiguraLinkUtil.isCustomBackend() || isSingleplayer()) {
+                    String serverIp = FiguraLinkUtil.getServerIp();
+                    if (serverIp == null || serverIp.isEmpty() || !FiguraLinkUtil.isCustomBackend() || isSingleplayer()) {
                         knownRemoteAvatarHashes.clear();
                         continue;
                     }
@@ -572,13 +572,9 @@ public class FiguraClientSync {
                     Object mc = getMinecraftClientInstance();
                     if (mc == null) continue;
 
-                    String remoteHost = getRemoteServerHost();
-                    if (remoteHost == null || remoteHost.isEmpty() || remoteHost.equals("127.0.0.1") || remoteHost.equals("localhost")) {
-                        continue;
-                    }
-
-                    int backendPort = FiguraLinkConfig.getBackendPort();
-                    String baseUrl = "http://" + remoteHost + ":" + backendPort;
+                    String baseUrl = (serverIp.startsWith("http://") || serverIp.startsWith("https://")) 
+                            ? serverIp 
+                            : ("http://" + serverIp);
 
                     UUID localUuid = null;
                     try {

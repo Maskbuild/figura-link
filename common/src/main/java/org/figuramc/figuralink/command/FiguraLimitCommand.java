@@ -39,13 +39,22 @@ public class FiguraLimitCommand {
             .executes(context -> {
                 Object source = context.getSource();
                 FiguraClientSync.switchToServerBackend();
-                sendFeedback(source, "[FiguraLimit] Switched Figura Cloud IP to server backend (port " + FiguraLinkConfig.getBackendPort() + ")");
+                String current = org.figuramc.figuralink.util.FiguraLinkUtil.getServerIp();
+                sendFeedback(source, "[FiguraLimit] Requested backend address from server. Current backend: " + (current != null ? current : "official"));
                 return 1;
             })
             .then(RequiredArgumentBuilder.argument("address", StringArgumentType.greedyString())
                 .executes(context -> {
                     Object source = context.getSource();
-                    String address = StringArgumentType.getString(context, "address");
+                    String address = StringArgumentType.getString(context, "address").trim();
+                    if (address.matches("^\\d+$")) {
+                        // User passed just a port number e.g. /figura link-server 27821
+                        String host = FiguraClientSync.getRemoteServerHost();
+                        if (host == null || host.isEmpty() || host.equals("127.0.0.1") || host.equals("localhost")) {
+                            host = "127.0.0.1";
+                        }
+                        address = host + ":" + address;
+                    }
                     FiguraClientSync.setFiguraServerIp(address);
                     sendFeedback(source, "[FiguraLimit] Switched Figura Cloud IP to: " + address);
                     return 1;
