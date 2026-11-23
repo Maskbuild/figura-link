@@ -9,6 +9,7 @@ import net.minecraft.client.User;
 import net.minecraft.network.chat.Component;
 import org.figuramc.figura.FiguraMod;
 
+import java.net.URLEncoder;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
@@ -20,7 +21,8 @@ public class AuthHandler {
             if (!reAuth && NetworkStuff.isConnected())
                 return;
 
-            FiguraMod.LOGGER.info("Authenticating with " + FiguraMod.MOD_NAME + " server...");
+            boolean isCustom = BreakLimitManager.isUsingCustomBackend();
+            FiguraMod.LOGGER.info("Authenticating with " + FiguraMod.MOD_NAME + (isCustom ? " custom" : "") + " server...");
             NetworkStuff.backendStatus = 2;
 
             Minecraft minecraft = Minecraft.getInstance();
@@ -42,6 +44,9 @@ public class AuthHandler {
                 NetworkStuff.authFail(Component.translatable("disconnect.loginFailedInfo.userBanned").getString());
             } catch (Exception e) {
                 NetworkStuff.authFail(e.getMessage());
+                if (isCustom) {
+                    BreakLimitManager.fallbackToOfficial();
+                }
             }
         });
     }
@@ -56,10 +61,14 @@ public class AuthHandler {
     }
 
     private static String getServerID(String username) throws Exception {
-        return request(HttpRequest.newBuilder(HttpAPI.getUri("/auth/id?username=" + username)).build());
+        return request(HttpRequest.newBuilder(HttpAPI.getUri("/auth/id?username=" + URLEncoder.encode(username, StandardCharsets.UTF_8))).build());
     }
 
     private static String getToken(String serverID) throws Exception {
-        return request(HttpRequest.newBuilder(HttpAPI.getUri("/auth/verify?id=" + serverID)).build());
+        StringBuilder query = new StringBuilder("/auth/verify?id=").append(URLEncoder.encode(serverID, StandardCharsets.UTF_8));
+        if (BreakLimitManager.isUsingCustomBackend()) {
+            query.append("&serverAddress=").append(URLEncoder.encode(BreakLimitManager.getActiveServerAddress(), StandardCharsets.UTF_8));
+        }
+        return request(HttpRequest.newBuilder(HttpAPI.getUri(query.toString())).build());
     }
 }

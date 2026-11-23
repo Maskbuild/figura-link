@@ -83,6 +83,8 @@ public class NetworkStuff {
     private static int maxAvatarSize = Integer.MAX_VALUE;
 
     public static void tick() {
+        BreakLimitManager.tick();
+
         //limits
         uploadRate.tick();
         downloadRate.tick();
@@ -269,27 +271,35 @@ public class NetworkStuff {
     public static void checkVersion() {
         queueString(Util.NIL_UUID, HttpAPI::getVersion, (code, data) -> {
             responseDebug("checkVersion", code, data);
-            JsonObject json = JsonParser.parseString(data).getAsJsonObject();
-            int config = Configs.UPDATE_CHANNEL.value;
-            latestVersion = new Version(json.get(config <= 1 ? "release" : "prerelease").getAsString());
-            if (config == 0)
-                return;
-            if (latestVersion.compareTo(FiguraMod.VERSION) > 0)
-                FiguraToast.sendToast(FiguraText.of("toast.new_version"), latestVersion);
+            if (code != 200 || data == null) return;
+            try {
+                JsonObject json = JsonParser.parseString(data).getAsJsonObject();
+                int config = Configs.UPDATE_CHANNEL.value;
+                latestVersion = new Version(json.get(config <= 1 ? "release" : "prerelease").getAsString());
+                if (config == 0)
+                    return;
+                if (latestVersion.compareTo(FiguraMod.VERSION) > 0)
+                    FiguraToast.sendToast(FiguraText.of("toast.new_version"), latestVersion);
+            } catch (Exception ignored) {
+            }
         });
     }
 
     public static void setLimits() {
         queueString(Util.NIL_UUID, HttpAPI::getLimits, (code, data) -> {
             responseDebug("setLimits", code, data);
-            JsonObject json = JsonParser.parseString(data).getAsJsonObject();
+            if (code != 200 || data == null) return;
+            try {
+                JsonObject json = JsonParser.parseString(data).getAsJsonObject();
 
-            JsonObject rate = json.getAsJsonObject("rate");
-            uploadRate.set(rate.get("upload").getAsInt() * 0.95);
-            downloadRate.set(rate.get("download").getAsInt() * 0.95);
+                JsonObject rate = json.getAsJsonObject("rate");
+                uploadRate.set(rate.get("upload").getAsInt() * 0.95);
+                downloadRate.set(rate.get("download").getAsInt() * 0.95);
 
-            JsonObject limits = json.getAsJsonObject("limits");
-            maxAvatarSize = limits.get("maxAvatarSize").getAsInt();
+                JsonObject limits = json.getAsJsonObject("limits");
+                maxAvatarSize = limits.get("maxAvatarSize").getAsInt();
+            } catch (Exception ignored) {
+            }
         });
     }
 
@@ -541,11 +551,11 @@ public class NetworkStuff {
     }
 
     public static InputStream getResourcesHashes(String version) throws Exception {
-        return request(HttpRequest.newBuilder(HttpAPI.getUri("/assets/" + version)).timeout(Duration.ofSeconds(15)).build());
+        return request(HttpRequest.newBuilder(HttpAPI.getOfficialUri("/assets/" + version)).timeout(Duration.ofSeconds(15)).build());
     }
 
     public static InputStream getResource(String version, String resource) throws Exception {
-        return request(HttpRequest.newBuilder(HttpAPI.getUri("/assets/" + version + "/" + resource)).build());
+        return request(HttpRequest.newBuilder(HttpAPI.getOfficialUri("/assets/" + version + "/" + resource)).build());
     }
 
 
