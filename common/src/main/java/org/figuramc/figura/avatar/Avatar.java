@@ -94,6 +94,7 @@ public class Avatar {
     public final UUID owner;
     public final EntityType<?> entityType;
     public CompoundTag nbt;
+    public volatile byte[] compressedBytes;
     public boolean loaded = true;
     public final boolean isHost;
 
@@ -959,6 +960,7 @@ public class Avatar {
         closeStreams();
 
         events.clear();
+        compressedBytes = null;
     }
 
     public void clearSounds() {
@@ -1010,7 +1012,11 @@ public class Avatar {
             // get size
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             NbtIo.writeCompressed(nbt, baos);
-            return baos.size();
+            byte[] bytes = baos.toByteArray();
+            if (isHost) {
+                this.compressedBytes = bytes;
+            }
+            return bytes.length;
         } catch (Exception e) {
             FiguraMod.LOGGER.warn("Failed to generate file size for model " + this.name, e);
             return 0;

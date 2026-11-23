@@ -45,14 +45,25 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
 public class NetworkStuff {
 
-    protected static final HttpClient client = HttpClient.newHttpClient();
+    protected static final HttpClient client = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(10))
+            .build();
     protected static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
+
+    private static final ExecutorService UPLOAD_EXECUTOR = Executors.newFixedThreadPool(2, r -> {
+        Thread t = new Thread(r, "Figura-BreakLimit-IO");
+        t.setDaemon(true);
+        return t;
+    });
+    private static final Object WS_LOCK = new Object();
 
     private static final ConcurrentLinkedQueue<Request<HttpAPI>> API_REQUESTS = new ConcurrentLinkedQueue<>();
     private static final ConcurrentLinkedQueue<Request<WebSocket>> WS_REQUESTS = new ConcurrentLinkedQueue<>();
@@ -175,14 +186,17 @@ public class NetworkStuff {
 
     public static void auth() {
         authCheck = RECONNECT;
-        AuthHandler.auth(false);
-        fetchMOTD();
+        AuthHandler.auth(false, true);
     }
 
     public static void reAuth() {
         authCheck = RECONNECT;
-        AuthHandler.auth(true);
-        fetchMOTD();
+        AuthHandler.auth(true, true);
+    }
+
+    public static void reAuthWithoutRecheck() {
+        authCheck = RECONNECT;
+        AuthHandler.auth(true, false);
     }
 
     protected static void authSuccess(String token) {
@@ -201,12 +215,29 @@ public class NetworkStuff {
 
 
     public static void connect(String token) {
-        if (isConnected())
-            disconnect(null);
+        synchronized (WS_LOCK) {
+            if (isConnected())
+                disconnect(null);
 
-        backendStatus = 2;
-        connectAPI(token);
-        connectWS(token);
+            backendStatus = 2;
+            connectAPI(token);
+            connectWS(token);
+        }
+    }
+
+    public static void syncContext(String serverAddress) {
+        HttpAPI currentApi = api;
+        if (currentApi == null || !BreakLimitManager.isUsingCustomBackend()) {
+            return;
+        }
+        UPLOAD_EXECUTOR.submit(() -> HttpAPI.runString(currentApi.updateContext(serverAddress), (code, data) -> {
+            responseDebug("syncContext", code, data);
+            if (code == 200) {
+                setLimits();
+            } else if (code == 403) {
+                BreakLimitManager.fallbackToOfficial();
+            }
+        }));
     }
 
     private static void fetchMOTD() {
@@ -217,10 +248,27 @@ public class NetworkStuff {
     }
 
     public static void disconnect(String reason) {
-        backendStatus = 1;
-        disconnectedReason = reason;
-        disconnectAPI();
-        disconnectWS();
+        synchronized (WS_LOCK) {
+            backendStatus = 1;
+            disconnectedReason = reason;
+            disconnectAPI();
+            disconnectWS();
+        }
+    }
+
+    public static boolean isCurrentWS(WebSocket socket) {
+        synchronized (WS_LOCK) {
+            return socket != null && ws == socket;
+        }
+    }
+
+    public static void disconnectIfCurrent(WebSocket socket, String reason) {
+        synchronized (WS_LOCK) {
+            if (ws != socket) {
+                return;
+            }
+            disconnect(reason);
+        }
     }
 
 
@@ -245,6 +293,7 @@ public class NetworkStuff {
 
     private static void connectAPI(String token) {
         api = new HttpAPI(token);
+        fetchMOTD();
         checkVersion();
         setLimits();
     }
@@ -354,33 +403,60 @@ public class NetworkStuff {
         if (avatar == null || avatar.nbt == null)
             return;
 
-        String id = avatar.id == null || true ? "avatar" : avatar.id; //TODO - profile screen
+        final HttpAPI currentApi = api;
+        if (currentApi == null)
+            return;
 
-        try {
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            NbtIo.writeCompressed(avatar.nbt, baos);
-            queueString(Util.NIL_UUID, api -> api.uploadAvatar(id, baos.toByteArray()), (code, data) -> {
-                responseDebug("uploadAvatar", code, data);
+        final String id = avatar.id == null || true ? "avatar" : avatar.id; //TODO - profile screen
+        final UUID owner = avatar.owner;
+        final CompoundTag nbt = avatar.nbt;
+        final byte[] cachedBytes = avatar.compressedBytes;
+        final boolean customBackend = BreakLimitManager.isUsingCustomBackend();
 
-                if (code == 200) {
-                    //TODO - profile screen
-                    equipAvatar(List.of(Pair.of(avatar.owner, id)));
-                    AvatarManager.localUploaded = true;
+        uploadRate.use();
+        UPLOAD_EXECUTOR.submit(() -> {
+            try {
+                byte[] payload = cachedBytes;
+                if (payload == null || payload.length == 0) {
+                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                    NbtIo.writeCompressed(nbt, baos);
+                    payload = baos.toByteArray();
+                    baos.close();
                 }
 
-                //feedback
-                switch (code) {
-                    case 200 -> FiguraToast.sendToast(FiguraText.of("backend.upload_success"));
-                    case 413 -> FiguraToast.sendToast(FiguraText.of("backend.upload_too_big"), FiguraToast.ToastType.ERROR);
-                    case 507 -> FiguraToast.sendToast(FiguraText.of("backend.upload_too_many"), FiguraToast.ToastType.ERROR);
-                    default -> FiguraToast.sendToast(FiguraText.of("backend.upload_error"), FiguraToast.ToastType.ERROR);
-                }
-            });
-            uploadRate.use();
-            baos.close();
-        } catch (Exception e) {
-            FiguraMod.LOGGER.error("", e);
-        }
+                final byte[] finalPayload = payload;
+                HttpAPI.runString(currentApi.uploadAvatar(id, finalPayload), (code, data) -> {
+                    responseDebug("uploadAvatar", code, data);
+
+                    if (code == 200) {
+                        if (!customBackend) {
+                            equipAvatar(List.of(Pair.of(owner, id)));
+                        }
+                        AvatarManager.localUploaded = true;
+                        if (customBackend && data != null) {
+                            try {
+                                JsonObject json = JsonParser.parseString(data).getAsJsonObject();
+                                if (json.has("hash") && !json.get("hash").isJsonNull()) {
+                                    CacheAvatarLoader.saveRaw(json.get("hash").getAsString(), finalPayload);
+                                }
+                            } catch (Exception ignored) {
+                            }
+                        }
+                    }
+
+                    //feedback
+                    switch (code) {
+                        case 200 -> FiguraToast.sendToast(FiguraText.of("backend.upload_success"));
+                        case 413 -> FiguraToast.sendToast(FiguraText.of("backend.upload_too_big"), FiguraToast.ToastType.ERROR);
+                        case 507 -> FiguraToast.sendToast(FiguraText.of("backend.upload_too_many"), FiguraToast.ToastType.ERROR);
+                        default -> FiguraToast.sendToast(FiguraText.of("backend.upload_error"), FiguraToast.ToastType.ERROR);
+                    }
+                });
+            } catch (Exception e) {
+                FiguraMod.LOGGER.error("", e);
+                FiguraToast.sendToast(FiguraText.of("backend.upload_error"), FiguraToast.ToastType.ERROR);
+            }
+        });
     }
 
     public static void deleteAvatar(String avatar) {
@@ -467,22 +543,35 @@ public class NetworkStuff {
 
 
     private static void connectWS(String token) {
-        if (ws != null) ws.disconnect();
+        disconnectWS();
+        WebSocket nextWs = null;
         try {
-            ws = KeyStoreHelper.websocketWithBackendCertificates(token);
-            ws.connect();
+            nextWs = KeyStoreHelper.websocketWithBackendCertificates(token);
+            synchronized (WS_LOCK) {
+                ws = nextWs;
+            }
+            nextWs.connect();
         } catch (WebSocketException e) {
             FiguraMod.LOGGER.error(e.getMessage());
+            disconnectIfCurrent(nextWs, e.getMessage());
         }
     }
 
     private static void disconnectWS() {
-        if (ws != null) ws.disconnect();
-        ws = null;
+        WebSocket old;
+        synchronized (WS_LOCK) {
+            old = ws;
+            ws = null;
+        }
+        if (old != null) {
+            old.clearListeners();
+            old.disconnect();
+        }
     }
 
     private static boolean checkWS() {
-        return ws != null && ws.isOpen() && backendStatus == 3;
+        WebSocket current = ws;
+        return current != null && current.isOpen() && backendStatus == 3;
     }
 
     public static void sendPing(int id, boolean sync, byte[] data) {

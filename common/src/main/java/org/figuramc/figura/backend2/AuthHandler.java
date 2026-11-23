@@ -13,13 +13,30 @@ import java.net.URLEncoder;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class AuthHandler {
 
+    private static final AtomicInteger authGeneration = new AtomicInteger(0);
+
     public static void auth(boolean reAuth) {
+        auth(reAuth, true);
+    }
+
+    public static void auth(boolean reAuth, boolean checkBreakLimit) {
+        final int myGen = authGeneration.incrementAndGet();
         NetworkStuff.async(() -> {
+            if (authGeneration.get() != myGen)
+                return;
             if (!reAuth && NetworkStuff.isConnected())
                 return;
+
+            if (checkBreakLimit) {
+                BreakLimitManager.ensureCheckedSync(reAuth || !NetworkStuff.isConnected());
+                if (authGeneration.get() != myGen)
+                    return;
+            }
 
             boolean isCustom = BreakLimitManager.isUsingCustomBackend();
             FiguraMod.LOGGER.info("Authenticating with " + FiguraMod.MOD_NAME + (isCustom ? " custom" : "") + " server...");
@@ -30,22 +47,35 @@ public class AuthHandler {
             try {
                 String username = user.getName();
                 String serverID = getServerID(username);
+                if (authGeneration.get() != myGen)
+                    return;
                 FiguraMod.debug("Joining \"{}\" on server \"{}\"", username, serverID);
                 minecraft.getMinecraftSessionService().joinServer(user.getProfileId(), user.getAccessToken(), serverID);
-                NetworkStuff.authSuccess(getToken(serverID));
+                if (authGeneration.get() != myGen)
+                    return;
+                String token = getToken(serverID);
+                if (authGeneration.get() != myGen)
+                    return;
+                NetworkStuff.authSuccess(token);
             // cringe exceptions
             } catch (AuthenticationUnavailableException e) {
-                NetworkStuff.authFail(Component.translatable("disconnect.loginFailedInfo.serversUnavailable").getString());
+                if (authGeneration.get() == myGen)
+                    NetworkStuff.authFail(Component.translatable("disconnect.loginFailedInfo.serversUnavailable").getString());
             } catch (InvalidCredentialsException e) {
-                NetworkStuff.authFail(Component.translatable("disconnect.loginFailedInfo.invalidSession").getString());
+                if (authGeneration.get() == myGen)
+                    NetworkStuff.authFail(Component.translatable("disconnect.loginFailedInfo.invalidSession").getString());
             } catch (InsufficientPrivilegesException e) {
-                NetworkStuff.authFail(Component.translatable("disconnect.loginFailedInfo.insufficientPrivileges").getString());
+                if (authGeneration.get() == myGen)
+                    NetworkStuff.authFail(Component.translatable("disconnect.loginFailedInfo.insufficientPrivileges").getString());
             } catch (UserBannedException e) {
-                NetworkStuff.authFail(Component.translatable("disconnect.loginFailedInfo.userBanned").getString());
+                if (authGeneration.get() == myGen)
+                    NetworkStuff.authFail(Component.translatable("disconnect.loginFailedInfo.userBanned").getString());
             } catch (Exception e) {
-                NetworkStuff.authFail(e.getMessage());
-                if (isCustom) {
-                    BreakLimitManager.fallbackToOfficial();
+                if (authGeneration.get() == myGen) {
+                    NetworkStuff.authFail(e.getMessage());
+                    if (isCustom) {
+                        BreakLimitManager.fallbackToOfficial();
+                    }
                 }
             }
         });
@@ -61,7 +91,9 @@ public class AuthHandler {
     }
 
     private static String getServerID(String username) throws Exception {
-        return request(HttpRequest.newBuilder(HttpAPI.getUri("/auth/id?username=" + URLEncoder.encode(username, StandardCharsets.UTF_8))).build());
+        return request(HttpRequest.newBuilder(HttpAPI.getUri("/auth/id?username=" + URLEncoder.encode(username, StandardCharsets.UTF_8)))
+                .timeout(Duration.ofSeconds(10))
+                .build());
     }
 
     private static String getToken(String serverID) throws Exception {
@@ -69,6 +101,8 @@ public class AuthHandler {
         if (BreakLimitManager.isUsingCustomBackend()) {
             query.append("&serverAddress=").append(URLEncoder.encode(BreakLimitManager.getActiveServerAddress(), StandardCharsets.UTF_8));
         }
-        return request(HttpRequest.newBuilder(HttpAPI.getUri(query.toString())).build());
+        return request(HttpRequest.newBuilder(HttpAPI.getUri(query.toString()))
+                .timeout(Duration.ofSeconds(10))
+                .build());
     }
 }

@@ -38,6 +38,7 @@ public class KeyStoreHelper {
             WebSocket socket = wsFactory.createSocket(FiguraWebSocketAdapter.getBackendAddress());
             socket.addListener(new FiguraWebSocketAdapter(token));
             socket.addExtension(WebSocketExtension.PERMESSAGE_DEFLATE);
+            socket.setPingInterval(25_000);
             return socket;
         } catch (IOException e) {
             FiguraMod.LOGGER.error("Failed to load in the backend's certificates during Websocket creation!", e);

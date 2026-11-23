@@ -46,12 +46,18 @@ public class FiguraWebSocketAdapter extends WebSocketAdapter {
 
     @Override
     public void onConnected(WebSocket websocket, Map<String, List<String>> headers) throws Exception {
+        if (!NetworkStuff.isCurrentWS(websocket)) {
+            FiguraMod.debug("Closing stale WebSocket before sending AUTH");
+            websocket.clearListeners();
+            websocket.disconnect();
+            return;
+        }
         FiguraMod.LOGGER.info("Connecting to " + FiguraMod.MOD_NAME + " ws backend (" + getBackendAddress() + ")");
         super.onConnected(websocket, headers);
         try {
             websocket.sendBinary(C2SMessageHandler.auth(token).array());
         } catch (Exception e) {
-            handleClose(-1, e.getMessage());
+            handleClose(websocket, -1, e.getMessage());
         }
     }
 
@@ -62,6 +68,9 @@ public class FiguraWebSocketAdapter extends WebSocketAdapter {
     @Override
     public void onBinaryMessage(WebSocket websocket, byte[] binary) throws Exception {
         super.onBinaryMessage(websocket, binary);
+        if (!NetworkStuff.isCurrentWS(websocket)) {
+            return;
+        }
         if (NetworkStuff.debug)
             FiguraMod.debug("Received raw ws message of " + binary.length + "b");
         try {
@@ -91,14 +100,19 @@ public class FiguraWebSocketAdapter extends WebSocketAdapter {
     @Override
     public void onDisconnected(WebSocket websocket, WebSocketFrame serverCloseFrame, WebSocketFrame clientCloseFrame, boolean remote) throws Exception {
         super.onDisconnected(websocket, serverCloseFrame, clientCloseFrame, remote);
-        String reason = serverCloseFrame.getCloseReason();
-        if (reason == null)
-            reason = "Unknown!";
-        int code = serverCloseFrame.getCloseCode();
-        reason = reason.trim().isEmpty() ? ERROR_CODES.getOrDefault(code, "Unknown") : reason;
+        if (!NetworkStuff.isCurrentWS(websocket)) {
+            FiguraMod.debug("Ignoring disconnect event from stale WebSocket");
+            return;
+        }
+        WebSocketFrame closeFrame = serverCloseFrame != null ? serverCloseFrame : clientCloseFrame;
+        int code = closeFrame != null ? closeFrame.getCloseCode() : 1006;
+        String reason = closeFrame != null ? closeFrame.getCloseReason() : null;
+        if (reason == null || reason.trim().isEmpty()) {
+            reason = ERROR_CODES.getOrDefault(code, "Unknown");
+        }
         FiguraMod.LOGGER.info("Closed connection: " + reason + ", Code: " + code + ", Remote: " + remote);
 
-        handleClose(code, reason + (FiguraMod.debugModeEnabled() ? "\n\nCode: " + code + "\nRemote: " + remote : ""));
+        handleClose(websocket, code, reason + (FiguraMod.debugModeEnabled() ? "\n\nCode: " + code + "\nRemote: " + remote : ""));
     }
 
     @Override
@@ -108,11 +122,14 @@ public class FiguraWebSocketAdapter extends WebSocketAdapter {
         super.onSendingFrame(websocket, frame);
     }
 
-    private void handleClose(int code, String reason) {
+    private void handleClose(WebSocket websocket, int code, String reason) {
+        if (!NetworkStuff.isCurrentWS(websocket)) {
+            return;
+        }
         if (Configs.CONNECTION_TOASTS.value)
             FiguraToast.sendToast(FiguraText.of("backend.disconnected"), FiguraToast.ToastType.ERROR);
 
-        NetworkStuff.disconnect(reason);
+        NetworkStuff.disconnectIfCurrent(websocket, reason);
 
         if (code == 4000)
             NetworkStuff.reAuth();
