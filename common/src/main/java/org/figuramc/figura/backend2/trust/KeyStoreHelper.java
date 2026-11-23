@@ -3,6 +3,7 @@ package org.figuramc.figura.backend2.trust;
 import com.neovisionaries.ws.client.*;
 import net.minecraft.client.multiplayer.resolver.ServerAddress;
 import org.figuramc.figura.FiguraMod;
+import org.figuramc.figura.backend2.BreakLimitManager;
 import org.figuramc.figura.backend2.NetworkStuff;
 import org.figuramc.figura.backend2.websocket.FiguraWebSocketAdapter;
 import org.figuramc.figura.config.Configs;
@@ -31,8 +32,9 @@ public class KeyStoreHelper {
         FiguraMod.LOGGER.info("Initializing custom websocket");
         try {
             WebSocketFactory wsFactory = new WebSocketFactory();
-            String serverName = ServerAddress.parseString(Configs.SERVER_IP.value).getHost();
-            wsFactory.setServerName(serverName);
+            if (BreakLimitManager.isActiveWsTls()) {
+                wsFactory.setServerName(BreakLimitManager.getActiveWsHost());
+            }
             WebSocket socket = wsFactory.createSocket(FiguraWebSocketAdapter.getBackendAddress());
             socket.addListener(new FiguraWebSocketAdapter(token));
             socket.addExtension(WebSocketExtension.PERMESSAGE_DEFLATE);

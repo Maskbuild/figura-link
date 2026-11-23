@@ -25,29 +25,28 @@ public class HttpAPI {
 
 
     protected static URI getUri(String url) {
-        return URI.create(getBackendAddress() + "/" + url);
+        String clean = url.startsWith("/") ? url.substring(1) : url;
+        return URI.create(getBackendAddress() + "/" + clean);
+    }
+
+    protected static URI getOfficialUri(String url) {
+        String clean = url.startsWith("/") ? url.substring(1) : url;
+        return URI.create(BreakLimitManager.getOfficialApiBase() + "/" + clean);
     }
 
     protected static String getBackendAddress() {
-        return "https://" + getBackendAddressWithPort() + "/api";
-    }
-
-    private static String getBackendAddressWithPort() {
-        ServerAddress backendIP = ServerAddress.parseString(Configs.SERVER_IP.value);
-        boolean hasPort = Configs.SERVER_IP.value.matches("[^:]+:\\d+");
-        if (hasPort) {
-            try {
-                return backendIP.getHost() + ":" + backendIP.getPort();
-            } catch (IllegalStateException ignored) { }
-        }
-        return backendIP.getHost();
+        return BreakLimitManager.getActiveApiBase();
     }
 
     protected HttpRequest.Builder header(String url) {
-        return HttpRequest
+        HttpRequest.Builder builder = HttpRequest
                 .newBuilder(getUri(url))
                 .header("user-agent", FiguraMod.MOD_NAME + "/" + FiguraMod.VERSION)
                 .header("token", token);
+        if (BreakLimitManager.isUsingCustomBackend()) {
+            builder.header("x-server-address", BreakLimitManager.getActiveServerAddress());
+        }
+        return builder;
     }
 
 

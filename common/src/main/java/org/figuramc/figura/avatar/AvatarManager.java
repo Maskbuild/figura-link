@@ -225,6 +225,16 @@ public class AvatarManager {
             clearAvatars(id);
     }
 
+    // reloads backend-fetched avatars when switching between Official and Custom backends
+    public static void reloadBackendAvatars() {
+        for (UUID id : new ArrayList<>(LOADED_USERS.keySet())) {
+            if (!localUploaded && FiguraMod.isLocal(id)) {
+                continue;
+            }
+            clearAvatars(id);
+        }
+    }
+
     // load the local player avatar
     public static void loadLocalAvatar(Path path) {
         UUID id = FiguraMod.getLocalPlayerUUID();

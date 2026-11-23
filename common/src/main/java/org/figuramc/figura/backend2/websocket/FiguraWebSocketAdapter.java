@@ -5,6 +5,7 @@ import com.neovisionaries.ws.client.WebSocketAdapter;
 import com.neovisionaries.ws.client.WebSocketFrame;
 import net.minecraft.client.multiplayer.resolver.ServerAddress;
 import org.figuramc.figura.FiguraMod;
+import org.figuramc.figura.backend2.BreakLimitManager;
 import org.figuramc.figura.backend2.NetworkStuff;
 import org.figuramc.figura.config.Configs;
 import org.figuramc.figura.gui.FiguraToast;
@@ -55,18 +56,7 @@ public class FiguraWebSocketAdapter extends WebSocketAdapter {
     }
 
     public static String getBackendAddress() {
-        return "wss://" + getBackendAddressWithPort() + "/ws";
-    }
-
-    private static String getBackendAddressWithPort() {
-        ServerAddress backendIP = ServerAddress.parseString(Configs.SERVER_IP.value);
-        boolean hasPort = Configs.SERVER_IP.value.matches("[^:]+:\\d+");
-        if (hasPort) {
-            try {
-                return backendIP.getHost() + ":" + backendIP.getPort();
-            } catch (IllegalStateException ignored) { }
-        }
-        return backendIP.getHost();
+        return BreakLimitManager.getActiveWsUrl();
     }
 
     @Override
