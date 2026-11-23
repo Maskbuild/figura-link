@@ -31,15 +31,20 @@ public class BreakLimitManager {
 
     private static final String RESOURCE_PATH = "/assets/figura_breaklimit/backend.json";
     private static final int RECHECK_INTERVAL_TICKS = 1200; // 60 seconds
+    private static final Object CHECK_LOCK = new Object();
 
     private static final String configuredBackendUrl;
     private static final String configuredWsUrl;
 
     private static volatile boolean usingCustomBackend = false;
+    private static volatile String activeScope = "";
+    private static volatile String activeServerId = "";
     private static volatile String activeServerAddress = "";
+    private static volatile String completedContextKey = null;
+    private static volatile long lastCheckTimeMs = 0L;
 
     private static final AtomicBoolean checkInFlight = new AtomicBoolean(false);
-    private static String lastRequestedContext = null;
+    private static volatile String lastRequestedContext = null;
     private static int ticksUntilRecheck = 0;
 
     static {
@@ -168,25 +173,43 @@ public class BreakLimitManager {
         return true;
     }
 
+    public static String getCurrentServerIp() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc == null) return "";
+        try {
+            if (mc.getConnection() != null && mc.getCurrentServer() != null && !mc.isLocalServer()) {
+                ServerData serverData = mc.getCurrentServer();
+                if (serverData != null && serverData.ip != null) {
+                    return serverData.ip.trim();
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return "";
+    }
+
+    public static void ensureCheckedSync(boolean force) {
+        if (!isConfigured()) {
+            return;
+        }
+        UUID uuid = FiguraMod.getLocalPlayerUUID();
+        if (uuid == null) {
+            return;
+        }
+        checkAccessInternal(uuid.toString(), getCurrentServerIp(), force, false);
+    }
+
     public static void tick() {
         if (!isConfigured()) {
             return;
         }
 
-        Minecraft mc = Minecraft.getInstance();
         UUID uuid = FiguraMod.getLocalPlayerUUID();
         if (uuid == null) {
             return;
         }
 
-        String currentServerIp = "";
-        if (mc.getConnection() != null && mc.getCurrentServer() != null && !mc.isLocalServer()) {
-            ServerData serverData = mc.getCurrentServer();
-            if (serverData.ip != null) {
-                currentServerIp = serverData.ip.trim();
-            }
-        }
-
+        String currentServerIp = getCurrentServerIp();
         String contextKey = uuid + "|" + currentServerIp;
         boolean contextChanged = !Objects.equals(contextKey, lastRequestedContext);
 
@@ -208,68 +231,132 @@ public class BreakLimitManager {
 
         CompletableFuture.runAsync(() -> {
             try {
-                checkAccessRemote(checkUuid, checkServerIp);
+                checkAccessInternal(checkUuid, checkServerIp, true, true);
             } finally {
                 checkInFlight.set(false);
             }
         });
     }
 
-    private static void checkAccessRemote(String uuid, String serverAddress) {
+    private static void checkAccessInternal(String uuid, String serverAddress, boolean force, boolean triggerTransition) {
+        boolean switchedBackend;
+        boolean switchedNonGlobalTarget;
+        boolean contextOnlyChanged;
         boolean nextAllowed = false;
-        try {
+        String nextScope = "";
+        String nextServerId = "";
+        String nextServerAddress;
+
+        synchronized (CHECK_LOCK) {
+            String contextKey = uuid + "|" + serverAddress;
+            if (!force && Objects.equals(contextKey, completedContextKey) && (System.currentTimeMillis() - lastCheckTimeMs) < 55_000L) {
+                return;
+            }
+
             JsonObject payload = new JsonObject();
             payload.addProperty("uuid", uuid);
             payload.addProperty("serverAddress", serverAddress);
+            String bodyJson = NetworkStuff.GSON.toJson(payload);
 
-            HttpRequest request = HttpRequest.newBuilder(URI.create(configuredBackendUrl + "/api/check-access"))
-                    .timeout(Duration.ofSeconds(5))
-                    .header("Content-Type", "application/json")
-                    .header("User-Agent", FiguraMod.MOD_NAME + "/" + FiguraMod.VERSION)
-                    .POST(HttpRequest.BodyPublishers.ofString(NetworkStuff.GSON.toJson(payload), StandardCharsets.UTF_8))
-                    .build();
+            for (int attempt = 0; attempt < 2; attempt++) {
+                try {
+                    HttpRequest request = HttpRequest.newBuilder(URI.create(configuredBackendUrl + "/api/check-access"))
+                            .timeout(Duration.ofSeconds(8))
+                            .header("Content-Type", "application/json")
+                            .header("User-Agent", FiguraMod.MOD_NAME + "/" + FiguraMod.VERSION)
+                            .POST(HttpRequest.BodyPublishers.ofString(bodyJson, StandardCharsets.UTF_8))
+                            .build();
 
-            HttpResponse<String> response = NetworkStuff.client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            if (response.statusCode() == 200) {
-                JsonObject json = JsonParser.parseString(response.body()).getAsJsonObject();
-                nextAllowed = json.has("allowed") && json.get("allowed").getAsBoolean();
+                    HttpResponse<String> response = NetworkStuff.client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                    if (response.statusCode() == 200) {
+                        JsonObject json = JsonParser.parseString(response.body()).getAsJsonObject();
+                        nextAllowed = json.has("allowed") && json.get("allowed").getAsBoolean();
+                        if (nextAllowed) {
+                            if (json.has("scope") && !json.get("scope").isJsonNull()) {
+                                nextScope = json.get("scope").getAsString();
+                            }
+                            if (json.has("serverId") && !json.get("serverId").isJsonNull()) {
+                                nextServerId = json.get("serverId").getAsString();
+                            }
+                        }
+                    }
+                    break;
+                } catch (Exception e) {
+                    if (attempt == 0) {
+                        try {
+                            Thread.sleep(250);
+                        } catch (InterruptedException ignored) {
+                            Thread.currentThread().interrupt();
+                        }
+                        continue;
+                    }
+                    FiguraMod.LOGGER.debug("BreakLimit check-access failed, keeping official fallback: {}", e.getMessage());
+                    nextAllowed = false;
+                    nextScope = "";
+                    nextServerId = "";
+                }
             }
-        } catch (Exception e) {
-            FiguraMod.LOGGER.debug("BreakLimit check-access failed, keeping official fallback: {}", e.getMessage());
-            nextAllowed = false;
+
+            nextServerAddress = nextAllowed ? serverAddress : "";
+            switchedBackend = (nextAllowed != usingCustomBackend);
+            switchedNonGlobalTarget = nextAllowed
+                    && !"global".equals(nextScope)
+                    && (!Objects.equals(nextScope, activeScope)
+                    || !Objects.equals(nextServerId, activeServerId)
+                    || !Objects.equals(nextServerAddress, activeServerAddress));
+            contextOnlyChanged = nextAllowed
+                    && !switchedBackend
+                    && !switchedNonGlobalTarget
+                    && (!Objects.equals(nextServerAddress, activeServerAddress)
+                    || !Objects.equals(nextServerId, activeServerId)
+                    || !Objects.equals(nextScope, activeScope));
+
+            usingCustomBackend = nextAllowed;
+            activeScope = nextAllowed ? nextScope : "";
+            activeServerId = nextAllowed ? nextServerId : "";
+            activeServerAddress = nextServerAddress;
+            completedContextKey = contextKey;
+            lastCheckTimeMs = System.currentTimeMillis();
+            lastRequestedContext = contextKey;
+            ticksUntilRecheck = RECHECK_INTERVAL_TICKS;
         }
 
-        String nextServerAddress = nextAllowed ? serverAddress : "";
-        boolean modeChanged = (nextAllowed != usingCustomBackend)
-                || (nextAllowed && !Objects.equals(nextServerAddress, activeServerAddress));
+        if (!triggerTransition) {
+            return;
+        }
 
-        usingCustomBackend = nextAllowed;
-        activeServerAddress = nextServerAddress;
-
-        if (modeChanged) {
+        if (switchedBackend || switchedNonGlobalTarget) {
             FiguraMod.LOGGER.info(
-                    "BreakLimit switched backend mode -> {} (server: {})",
+                    "BreakLimit switched backend mode -> {} (scope: {}, server: {})",
                     nextAllowed ? "CUSTOM" : "OFFICIAL",
+                    activeScope.isEmpty() ? "none" : activeScope,
                     nextServerAddress.isEmpty() ? "<global/none>" : nextServerAddress
             );
-            Minecraft.getInstance().execute(() -> {
-                AvatarManager.reloadBackendAvatars();
-                NetworkStuff.reAuth();
-            });
+            NetworkStuff.reAuthWithoutRecheck();
+            Minecraft.getInstance().execute(AvatarManager::reloadBackendAvatars);
+        } else if (contextOnlyChanged && NetworkStuff.isConnected()) {
+            FiguraMod.LOGGER.info(
+                    "BreakLimit syncing Global server context seamlessly -> {}",
+                    nextServerAddress.isEmpty() ? "<global/singleplayer>" : nextServerAddress
+            );
+            NetworkStuff.syncContext(nextServerAddress);
         }
     }
 
     public static void fallbackToOfficial() {
-        if (!usingCustomBackend) {
-            return;
+        synchronized (CHECK_LOCK) {
+            if (!usingCustomBackend) {
+                return;
+            }
+            usingCustomBackend = false;
+            activeScope = "";
+            activeServerId = "";
+            activeServerAddress = "";
+            completedContextKey = null;
+            ticksUntilRecheck = RECHECK_INTERVAL_TICKS;
         }
-        usingCustomBackend = false;
-        activeServerAddress = "";
-        ticksUntilRecheck = RECHECK_INTERVAL_TICKS;
         FiguraMod.LOGGER.warn("BreakLimit custom backend denied access; falling back to Official backend.");
-        Minecraft.getInstance().execute(() -> {
-            AvatarManager.reloadBackendAvatars();
-            NetworkStuff.reAuth();
-        });
+        NetworkStuff.reAuthWithoutRecheck();
+        Minecraft.getInstance().execute(AvatarManager::reloadBackendAvatars);
     }
 }

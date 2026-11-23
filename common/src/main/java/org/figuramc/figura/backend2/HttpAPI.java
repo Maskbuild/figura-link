@@ -1,5 +1,6 @@
 package org.figuramc.figura.backend2;
 
+import com.google.gson.JsonObject;
 import net.minecraft.client.multiplayer.resolver.ServerAddress;
 import org.figuramc.figura.FiguraMod;
 import org.figuramc.figura.config.Configs;
@@ -9,6 +10,7 @@ import java.net.URI;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.UUID;
 import java.util.function.BiConsumer;
 
@@ -61,7 +63,7 @@ public class HttpAPI {
             if (code == 401) NetworkStuff.reAuth();
             consumer.accept(code, response.body());
         } catch (Exception e) {
-            if (!e.getMessage().contains("GOAWAY received"))
+            if (e.getMessage() == null || !e.getMessage().contains("GOAWAY received"))
                 FiguraMod.LOGGER.error("", e);
         }
     }
@@ -74,7 +76,7 @@ public class HttpAPI {
             if (code == 401) NetworkStuff.reAuth();
             consumer.accept(code, response.body());
         } catch (Exception e) {
-            if (!e.getMessage().contains("GOAWAY received"))
+            if (e.getMessage() == null || !e.getMessage().contains("GOAWAY received"))
                 FiguraMod.LOGGER.error("", e);
         }
     }
@@ -118,7 +120,11 @@ public class HttpAPI {
     }
 
     public HttpRequest uploadAvatar(String id, byte[] bytes) {
-        return header(id).PUT(HttpRequest.BodyPublishers.ofByteArray(bytes)).header("Content-Type", "application/octet-stream").build();
+        return header(id)
+                .timeout(Duration.ofSeconds(60))
+                .PUT(HttpRequest.BodyPublishers.ofByteArray(bytes))
+                .header("Content-Type", "application/octet-stream")
+                .build();
     }
 
     public HttpRequest deleteAvatar(String id) {
@@ -127,6 +133,16 @@ public class HttpAPI {
 
     public HttpRequest setEquipped(String json) {
         return header("equip").POST(HttpRequest.BodyPublishers.ofString(json)).header("Content-Type", "application/json").build();
+    }
+
+    public HttpRequest updateContext(String serverAddress) {
+        JsonObject body = new JsonObject();
+        body.addProperty("serverAddress", serverAddress == null ? "" : serverAddress);
+        return header("context")
+                .timeout(Duration.ofSeconds(8))
+                .POST(HttpRequest.BodyPublishers.ofString(NetworkStuff.GSON.toJson(body), StandardCharsets.UTF_8))
+                .header("Content-Type", "application/json")
+                .build();
     }
 
     public HttpRequest setBadge(Integer badgeId) {

@@ -79,6 +79,20 @@ public class CacheAvatarLoader {
         });
     }
 
+    public static void saveRaw(String hash, byte[] compressedBytes) {
+        if (hash == null || hash.isBlank() || compressedBytes == null || compressedBytes.length == 0)
+            return;
+        LocalAvatarLoader.async(() -> {
+            Path file = getAvatarCacheDirectory().resolve(hash + ".nbt");
+            try {
+                Files.write(file, compressedBytes);
+                FiguraMod.debug("Saved raw avatar \"{}\" on cache", hash);
+            } catch (Exception e) {
+                FiguraMod.LOGGER.error("Failed to save raw avatar on cache: " + hash, e);
+            }
+        });
+    }
+
     public static void clearCache() {
         LocalAvatarLoader.async(() -> {
             Path file = getAvatarCacheDirectory();
